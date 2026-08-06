@@ -204,6 +204,11 @@ table.tbl .num{text-align:right;font-variant-numeric:tabular-nums}
 .secRow{display:flex;gap:8px;align-items:center;margin-bottom:6px}
 .bidHi{background:var(--okbg)!important;font-weight:700}
 @media(max-width:920px){#gsWrap{display:none}}
+.lgLangRow{display:flex;align-items:center;margin-bottom:14px}
+.lgLangBtn{background:#fff;border:1px solid var(--line);color:var(--navy);border-radius:16px;padding:4px 12px;font-size:12px;margin-right:6px;cursor:pointer}
+.lgLangBtn.on{background:var(--blue);color:#fff;border-color:var(--blue)}
+.modToggle{display:inline-flex;align-items:center;gap:7px;background:var(--sky);border:1px solid var(--line);border-radius:8px;padding:7px 12px;font-size:12.5px;cursor:pointer}
+.modToggle input{width:16px;height:16px}
 </style>
 </head>
 <body>
@@ -221,13 +226,14 @@ table.tbl .num{text-align:right;font-variant-numeric:tabular-nums}
   </div>
   <div class="authRight">
     <div class="loginCard">
-      <h2>Sign in</h2>
-      <div class="sub">Accounts are issued centrally by your administrator. Self-registration is not available.</div>
+      <div class="lgLangRow"><span id="lg_langL" style="font-size:12px;color:var(--grey);margin-right:8px">Language</span><button class="lgLangBtn on" data-l="en" onclick="setLoginLang('en')">English</button><button class="lgLangBtn" data-l="fr" onclick="setLoginLang('fr')">Français</button></div>
+      <h2 id="lg_title">Sign in</h2>
+      <div class="sub" id="lg_sub">Accounts are issued centrally by your administrator. Self-registration is not available.</div>
       <div id="loginErr" class="notice e" style="display:none"></div>
-      <label>Username</label><input id="liUser" autocomplete="username" placeholder="e.g. proc.insapt">
-      <label>Password</label><input id="liPass" type="password" autocomplete="current-password" placeholder="••••••••">
-      <div class="btnRow"><button class="btn" style="width:100%" onclick="doLogin()">Sign in securely</button></div>
-      <div style="margin-top:14px;font-size:11.5px;color:var(--grey);line-height:1.6">Passwords are hashed (SHA-256) and never stored in clear text. Sessions expire after 60 minutes of inactivity. Forgot your password? Contact your organization administrator.</div>
+      <label id="lg_userL">Username</label><input id="liUser" autocomplete="username" placeholder="e.g. proc.insapt">
+      <label id="lg_passL">Password</label><input id="liPass" type="password" autocomplete="current-password" placeholder="••••••••">
+      <div class="btnRow"><button class="btn" style="width:100%" onclick="doLogin()" id="lg_btn">Sign in securely</button></div>
+      <div id="lg_note" style="margin-top:14px;font-size:11.5px;color:var(--grey);line-height:1.6">Passwords are hashed (SHA-256) and never stored in clear text. Sessions expire after 60 minutes of inactivity. Forgot your password? Contact your organization administrator.</div>
       <div style="margin-top:22px;text-align:center;font-size:11px;color:var(--grey)">© ForTe Tools Is40v31 – Innocent Forteh</div>
     </div>
   </div>
@@ -244,8 +250,9 @@ table.tbl .num{text-align:right;font-variant-numeric:tabular-nums}
     <div id="bellWrap"><button class="bellBtn" onclick="Notif.toggle()" title="Notifications">🔔<span id="bellCount" class="bellCount"></span></button><div id="notifDrop"></div></div>
     <div style="display:flex;align-items:center;gap:6px"><div id="syncDot"></div><span id="syncLbl">local</span></div>
     <button class="tbtn" onclick="Sync.pushNow(true)" title="Push data to cloud">⇅ Sync</button>
+    <button class="tbtn" id="langBtn" onclick="toggleLang()" title="Switch language / Changer de langue">FR</button>
     <div id="userChip"><div class="av" id="uAv"></div><div><div class="un" id="uName"></div><div class="ur" id="uRole"></div></div></div>
-    <button class="tbtn" onclick="logout()">Sign out</button>
+    <button class="tbtn" id="btnSignout" onclick="logout()">Sign out</button>
   </div>
   <div id="body">
     <div id="sidebar"></div>
@@ -337,7 +344,7 @@ function Org(){ const me=Session.user; if(!me)return null; return byId('orgs',Se
 function audit(action,detail){ col('audit').unshift({id:uid('au'),orgId:Session.user?Session.user.orgId:'-',user:Session.user?Session.user.username:'system',action,detail,at:nowIso()}); if(col('audit').length>3000)DB.audit=DB.audit.slice(0,3000); }
 
 /* ==================== SESSION & AUTH ==================== */
-const Session={user:null,viewOrgId:null,lastActive:Date.now(),token:null};
+const Session={user:null,viewOrgId:null,lastActive:Date.now(),token:null,lang:'en'};
 setInterval(()=>{ if(Session.user && Date.now()-Session.lastActive>CONFIG.sessionMinutes*60000){ toast('Session expired — please sign in again.','warn'); logout(); } },30000);
 document.addEventListener('click',()=>Session.lastActive=Date.now());
 document.addEventListener('keydown',()=>Session.lastActive=Date.now());
@@ -351,7 +358,7 @@ async function doLogin(){
   const hash=await sha256(p);
   if(!user||user.passHash!==hash){ err.textContent='Invalid credentials. Accounts are created by your administrator only.'; err.style.display='block'; audit('LOGIN_FAIL',u); save(); return; }
   if(user.active===false){ err.textContent='This account has been deactivated. Contact your administrator.'; err.style.display='block'; return; }
-  Session.user=user; Session.token=uid('tok'); Session.lastActive=Date.now();
+  Session.user=user; Session.token=uid('tok'); Session.lastActive=Date.now(); Session.lang=user.lang||window.loginLang||'en';
   user.lastLogin=nowIso(); audit('LOGIN',user.username); save();
   enterShell();
 }
@@ -364,12 +371,13 @@ function enterShell(){
   $('uRole').textContent=roleLabel(me.role);
   $('orgBadge').textContent=me.role==='superadmin'?'ForTé Platform — Super Admin':(org?org.name:'');
   Sync.setDot(CONFIG.gasUrl?'on':'','local'+(CONFIG.gasUrl?' + cloud':''));
-  buildNav(); Notif.refresh(); nav(defaultView());
+  buildNav(); Notif.refresh(); if(window.applyChrome)applyChrome(); nav(defaultView()); if(window.retranslateAll)retranslateAll();
 }
 function roleLabel(r){ return ({superadmin:'Super Administrator',orgadmin:'Organization Admin',requisitioner:'Requisitioner',approver:'Approver / Section Head',procurement:'Procurement Officer',finance:'Finance Officer',dg:'Final Authority (DG)',receiver:'Receiving Officer',hr:'HR Officer',store:'Warehouse / Store',sales:'Sales / CRM',viewer:'Viewer'})[r]||r; }
 function can(perm){
   const me=Session.user; if(!me)return false;
   if(me.role==='superadmin')return ['platform'].includes(perm);
+  if(perm==='proc.req'||perm==='proc.view'||perm==='myrecords')return true;
   if(me.role==='orgadmin')return perm!=='platform';
   const map={
     requisitioner:['dash','proc.req','proc.view','inv.view','reports','projects','myrecords'],
@@ -396,7 +404,7 @@ function nav(id){
   document.querySelectorAll('.navItem').forEach(n=>n.classList.toggle('active',n.dataset.v===id));
   const m=$('main'); m.innerHTML='';
   const head=document.createElement('div'); head.className='pageHead';
-  head.innerHTML=`<div><div class="crumb">${esc(v.crumb||'')}</div><h1>${esc(v.title)}</h1></div><div class="spacer"></div>`;
+  head.innerHTML=`<div><div class="crumb">${esc(TL(v.crumb||''))}</div><h1>${esc(TL(v.title))}</h1></div><div class="spacer"></div>`;
   const cb=document.createElement('button'); cb.className='helpMini'; cb.style.cssText='width:auto;padding:4px 11px;border-radius:14px;font-size:11px;margin-right:2px'; cb.innerHTML='⬇ CSV'; cb.title='Export this table to CSV'; cb.onclick=exportMainTableCSV; head.appendChild(cb);
   const hb=document.createElement('button'); hb.className='helpBtn'; hb.textContent='?'; hb.title='Help for this window'; hb.onclick=()=>{const h=typeof v.help==='function'?v.help():v.help;Help.open(v.title,h||'<p>No help available for this window yet.</p>');};
   head.appendChild(hb); m.appendChild(head);
@@ -413,9 +421,10 @@ function defaultView(){
 function buildNav(){
   const sb=$('sidebar'); sb.innerHTML='';
   const me=Session.user;
+  const org=byId('orgs',me.orgId); const MOD=(org&&org.modules)||{};
   const groups=[];
   if(me.role==='superadmin'){
-    groups.push({lbl:'Platform',items:[['sa.orgs','🏢','Organizations'],['sa.users','👥','All Accounts'],['sa.audit','🛡️','Platform Audit'],['sa.data','☁️','Data & Sync']]});
+    groups.push({lbl:'Platform',items:[['sa.orgs','🏢','Organizations'],['sa.users','👥','All Accounts'],['sa.modules','🧩','Modules'],['rep.center','🖨️','Reports Centre'],['sa.audit','🛡️','Platform Audit'],['sa.data','☁️','Data & Sync']]});
   } else {
     groups.push({lbl:'Overview',items:[['dash','📊','Dashboard']]});
     const proc=[];
@@ -426,33 +435,35 @@ function buildNav(){
     if(can('proc.final'))proc.push(['pr.final','🖋️','Final Approval (DG)']);
     if(can('proc.process')||can('proc.final'))proc.push(['pr.instruments','📄','PO / Contract Queue']);
     if(can('proc.suppliers')||Session.user.role==='orgadmin')proc.push(['pr.suppliers','🏬','Suppliers'],['pr.vendor','⭐','Vendor Evaluation']);
+    if(me.role===((org&&org.flow&&org.flow.vendorApproverRole)||'dg')||me.role==='orgadmin')proc.push(['pr.vendorappr','🛡️','Vendor Approvals']);
     if(can('proc.contracts'))proc.push(['pr.contracts','📑','Contract Register']);
     if(proc.length)groups.push({lbl:'Procurement',items:proc});
     const fin=[];
     if(can('fin.gl')||me.role==='orgadmin')fin.push(['fin.gl','📒','General Ledger'],['fin.ap','📤','Accounts Payable'],['fin.ar','📥','Accounts Receivable'],['fin.budget','🎯','Budgeting'],['fin.assets','🏗️','Asset Register'],['fin.reports','📈','Financial Reports']);
     else if(can('budget.view'))fin.push(['fin.budget','🎯','Budgeting']);
-    if(fin.length)groups.push({lbl:'Finance & Accounting',items:fin});
+    if(fin.length&&MOD.finance!==false)groups.push({lbl:'Finance & Accounting',items:fin});
     const hr=[];
     if(can('hr.all')||me.role==='orgadmin')hr.push(['hr.emp','🧑‍💼','Employees'],['hr.payroll','💵','Payroll'],['hr.recruit','🔎','Recruitment'],['hr.perf','📋','Performance'],['hr.train','🎓','Training'],['hr.leave','🌴','Leave']);
     else if(can('hr.view'))hr.push(['hr.emp','🧑‍💼','Employees']);
-    if(hr.length)groups.push({lbl:'Human Resources',items:hr});
+    if(hr.length&&MOD.hr!==false)groups.push({lbl:'Human Resources',items:hr});
     const inv=[];
     if(can('inv.view'))inv.push(['inv.items','📦','Stock & Items']);
     if(can('inv.receive'))inv.push(['inv.grn','🚚','Receiving (GRN)']);
     if(can('inv.ops')||me.role==='orgadmin')inv.push(['inv.issue','📤','Issue / Transfer'],['inv.val','🧮','Valuation']);
-    if(inv.length)groups.push({lbl:'Inventory & Warehouse',items:inv});
-    if(can('crm.all')||me.role==='orgadmin')groups.push({lbl:'Sales & CRM',items:[['crm.cust','🤝','Customers'],['crm.quote','💬','Quotations'],['crm.so','🧾','Sales Orders & Invoices']]});
+    if(inv.length&&MOD.inventory!==false)groups.push({lbl:'Inventory & Warehouse',items:inv});
+    if((can('crm.all')||me.role==='orgadmin')&&MOD.sales!==false)groups.push({lbl:'Sales & CRM',items:[['crm.cust','🤝','Customers'],['crm.quote','💬','Quotations'],['crm.so','🧾','Sales Orders & Invoices']]});
     if(me.role==='orgadmin'||can('reports')){
-      const ops=[];
-      if(me.role==='orgadmin'){ops.push(['scm.plan','🔗','Supply Chain'],['mfg.main','🏭','Manufacturing'],['prj.main','📐','Projects'],['ast.maint','🔧','Maintenance']);}
-      else {ops.push(['prj.main','📐','Projects']);}
-      groups.push({lbl:'Operations',items:ops});
+      let ops=[];
+      if(me.role==='orgadmin'){ if(MOD.scm!==false)ops.push(['scm.plan','🔗','Supply Chain']); if(MOD.mfg!==false)ops.push(['mfg.main','🏭','Manufacturing']); if(MOD.projects!==false)ops.push(['prj.main','📐','Projects']); if(MOD.maint!==false)ops.push(['ast.maint','🔧','Maintenance']); }
+      else if(MOD.projects!==false){ops.push(['prj.main','📐','Projects']);}
+      if(ops.length)groups.push({lbl:'Operations',items:ops});
     }
-    groups.push({lbl:'Intelligence',items:[['bi.dash','📈','BI & KPIs'],['bi.audit','🛡️','Audit Trail']].filter(x=>x[0]!=='bi.audit'||can('audit')||me.role==='orgadmin')});
-    if(me.role==='orgadmin')groups.push({lbl:'Administration',items:[['adm.users','👥','User Accounts'],['adm.flow','🔀','Workflow Config'],['adm.sections','🏷️','Sections & Routing'],['adm.clauses','📚','Clause Library'],['adm.org','🏢','Organization Profile']]});
+    if(MOD.bi!==false)groups.push({lbl:'Intelligence',items:[['bi.dash','📈','BI & KPIs'],['bi.audit','🛡️','Audit Trail']].filter(x=>x[0]!=='bi.audit'||can('audit')||me.role==='orgadmin')});
+    if(me.role==='orgadmin')groups.push({lbl:'Administration',items:[['adm.users','👥','User Accounts'],['adm.flow','🔀','Workflow Config'],['adm.sections','🏷️','Sections & Routing'],['adm.clauses','📚','Clause Library'],['rep.center','🖨️','Reports Centre'],['adm.org','🏢','Organization Profile']]});
   }
   groups.forEach(g=>{
     const gd=document.createElement('div'); gd.className='navGroup';
+    g.lbl=TL(g.lbl);
     gd.innerHTML=`<div class="gLbl">${esc(g.lbl)}</div>`;
     g.items.forEach(([vid,ic,lbl])=>{
       if(!Views[vid])return;
@@ -540,7 +551,8 @@ async function seedDB(){
     orgs:[
       {id:ORG,name:"INSAPT — Institut National de Santé Publique du Tchad",short:'INSAPT',country:'Chad',city:"N'Djaména",currency:'FCFA',legal:"EPST — soumis au Code des Marchés Publics du Tchad (Décret N°002130/PR/2020; seuils: Décret N°2499/PR/2020)",clausePackDefault:'cp_cd',fiscalStart:'01-01',active:true,createdAt:nowIso(),
        sections:[{id:'sec_lab',name:'Laboratoire National',approverId:'u_chef'},{id:'sec_admin',name:'Administration',approverId:'u_chef'},{id:'sec_dg',name:'Direction Générale',approverId:'u_chef'}],
-       flow:{approverRole:'approver',finalRole:'dg',requireAttachmentsProcurement:true,requireQuotesRequisition:false,finalLabel:'Directeur Général (DG)',approverLabel:'Chef de Service (Section Head)'}}
+       modules:{finance:true,hr:true,inventory:true,sales:true,scm:true,mfg:true,projects:true,maint:true,bi:true},
+       flow:{approverRole:'approver',finalRole:'dg',requireAttachmentsProcurement:true,requireQuotesRequisition:false,vendorApproverRole:'dg',finalLabel:'Directeur Général (DG)',approverLabel:'Chef de Service (Section Head)'}}
     ],
     users:[
       {id:'u_sa',orgId:'-',username:'superadmin',name:'ForTé Platform Owner',role:'superadmin',email:'team21online@gmail.com',active:true,passHash:await h('Forte@2026'),createdAt:nowIso()},
@@ -550,7 +562,11 @@ async function seedDB(){
       Object.assign(U('u_proc','proc.insapt','Spécialiste Passation des Marchés (SPM)','procurement'),{passHash:await h('Insapt@2026')}),
       Object.assign(U('u_fin','fin.insapt','Agent Comptable','finance'),{passHash:await h('Insapt@2026')}),
       Object.assign(U('u_dg','dg.insapt','Pr Ali Mahamat Moussa — Directeur Général','dg'),{passHash:await h('Insapt@2026')}),
-      Object.assign(U('u_store','store.insapt','Magasinier / Réceptionnaire','receiver'),{passHash:await h('Insapt@2026')})
+      Object.assign(U('u_store','store.insapt','Magasinier / Réceptionnaire','receiver'),{passHash:await h('Insapt@2026')}),
+      Object.assign(U('u_hr','hr.insapt','Responsable RH','hr'),{passHash:await h('Insapt@2026'),section:'Ressources Humaines'}),
+      Object.assign(U('u_sales','sales.insapt','Chargé Ventes/CRM','sales'),{passHash:await h('Insapt@2026'),section:'Ventes'}),
+      Object.assign(U('u_inv','inv.insapt','Gestionnaire de Stock','store'),{passHash:await h('Insapt@2026'),section:'Magasin'}),
+      Object.assign(U('u_audit','audit.insapt','Auditeur Interne','viewer'),{passHash:await h('Insapt@2026'),section:'Contrôle Interne'})
     ],
     clausePacks:[
       {id:'cp_cd',orgId:ORG,name:'Consultation Directe (< 10 M FCFA)',method:'Consultation directe sur bon de commande',legal:'Art. 13, Décret N°002130/PR/2020 (CMP) · Décret N°2499/PR/2020',range:'< 10 000 000 FCFA TTC (tous types)',approvers:'DG + Chef de service + Comptable',delay:'3–7 jours',clauses:[
@@ -711,7 +727,7 @@ function reqForm(existing){
     <div class="notice i">Describe the need, attach your supporting <b>quotes / pro-forma invoices</b>, add comments, then send to your ${esc(Org().flow.approverLabel||'Section Head')} for approval.</div>
     <div class="grid2">
       ${field({k:'title',label:'Requisition title',req:true,ph:'e.g. Réactifs de biochimie — T3 2026'},r.title)}
-      ${secs.length?field({k:'section',label:'Requesting section / department',type:'select',req:true,opts:secs.map(x=>x.name)},r.section||Session.user.section||secs[0].name):field({k:'section',label:'Requesting section / department',req:true},r.section||Session.user.section||'')}
+      <div class="field"><label>Requesting section / department <span class="req">*</span></label><input id="f_section" list="secDL" value="${esc(r.section||Session.user.section||'')}" placeholder="Select or type a new section"><datalist id="secDL">${secs.map(x=>`<option value="${esc(x.name)}">`).join('')}</datalist></div>
     </div>
     <div class="grid2">
       ${field({k:'approverId',label:'Send to approver ('+esc(Org().flow.approverLabel||'Section Head')+')',type:'select',opts:approvers.map(a=>[a.id,a.name+' — '+(a.section||roleLabel(a.role))]),req:true},r.approverId)}
@@ -754,6 +770,7 @@ function saveReq(id,draft){
   if(!draft && Org().flow.requireQuotesRequisition && !_newAtt.length){toast('Your organization requires at least one quote attached before sending.','bad');return;}
   let r=id?byId('reqs',id):null;
   if(!r){ r={id:uid('rq'),orgId:Session.user.orgId,no:seqNo('REQ',C('reqs'),'no'),requesterId:Session.user.id,requesterName:Session.user.name,createdAt:nowIso(),attachments:[],comments:[],history:[]}; col('reqs').unshift(r); }
+  if(f.section){ const secs=Org().sections=Org().sections||[]; if(!secs.some(x=>x.name.toLowerCase()===f.section.toLowerCase())){ secs.push({id:uid('sec'),name:f.section,approverId:''}); audit('SECTION_ADD',f.section); } }
   Object.assign(r,{title:f.title,section:f.section,approverId:f.approverId,budgetId:f.budgetId,justification:f.justification,items});
   r.attachments=(r.attachments||[]).filter(a=>a.stage==='proc');
   _newAtt.forEach(a=>{a.stage='req';r.attachments.push(a);});
@@ -847,8 +864,14 @@ function procModal(id){
     <div id="packPreview"></div>
     <div class="grid2">
       ${field({k:'instrumentType',label:'Instrument to be generated',type:'select',opts:[['BC','Bon de Commande (Purchase Order)'],['LC','Lettre de Commande'],['CONTRAT','Contrat / Marché'],['SC','Service Contract']]},r.instrumentType||'BC')}
-      ${field({k:'negotiated',label:'Final negotiated amount ('+esc(Org().currency)+')',type:'number'},r.negotiated||reqTotal(r))}
+      ${field({k:'negotiated',label:'Final negotiated amount HT ('+esc(Org().currency)+')',type:'number'},r.negotiated||reqTotal(r))}
     </div>
+    <div class="grid3">
+      ${field({k:'taxPct',label:'VAT / TVA (%)',type:'number'},r.taxPct!=null?r.taxPct:18)}
+      ${field({k:'transport',label:'Transport / delivery charge',type:'number'},r.transport||0)}
+      ${field({k:'tvaExonere',label:'VAT (TVA) exoneration',type:'select',opts:[['no','No — VAT applies'],['yes','Yes — exonerated']]},r.tvaExonere?'yes':'no')}
+    </div>
+    <div id="procCalc" class="notice i"></div>
     ${field({k:'procNotes',label:'Procurement notes (method justification, evaluation summary)',type:'textarea',req:true,ph:'e.g. Consultation restreinte — 3 devis reçus, PV d\'analyse joint; offre la moins-disante conforme retenue.'},r.procNotes)}
     <label>Attach procurement documents (quotes retained, PV, DAO…) <span class="req">*</span></label>
     ${attachControl('procAtt')}
@@ -859,6 +882,7 @@ function procModal(id){
   bindAttach('procAtt',_procAtt);
   const sel=$('f_clausePackId'); const prev=()=>{const p=byId('clausePacks',sel.value); $('packPreview').innerHTML=p?`<div class="notice i" style="margin-top:4px"><b>${esc(p.name)}</b> — ${esc(p.method)}<br><small>${esc(p.range)} · Approvers: ${esc(p.approvers)} · Indicative delay: ${esc(p.delay)}<br><i>${esc(p.legal)}</i> · ${p.clauses.length} clauses will be embedded in the instrument.</small></div>`:'';};
   sel.onchange=prev; prev();
+  ['f_negotiated','f_taxPct','f_transport','f_tvaExonere'].forEach(idf=>{const e=$(idf);if(e){e.addEventListener('input',procCalc);e.addEventListener('change',procCalc);}}); procCalc();
 }
 function suggestPack(total){
   const packs=C('clausePacks'); if(!packs.length)return '';
@@ -868,11 +892,12 @@ function suggestPack(total){
   return (packs.find(p=>p.id==='cp_aoi')||{}).id||'';
 }
 function actToFinance(id){
-  const f=readForm([{k:'clausePackId',req:true},{k:'supplierId',req:true},{k:'instrumentType'},{k:'negotiated',type:'number'},{k:'procNotes',req:true},{k:'note'}]); if(!f)return;
+  const f=readForm([{k:'clausePackId',req:true},{k:'supplierId',req:true},{k:'instrumentType'},{k:'negotiated',type:'number'},{k:'taxPct',type:'number'},{k:'transport',type:'number'},{k:'tvaExonere'},{k:'procNotes',req:true},{k:'note'}]); if(!f)return;
   const r=byId('reqs',id);
   const hasProcAtt=_procAtt.length||(r.attachments||[]).some(a=>a.stage==='proc');
   if(Org().flow.requireAttachmentsProcurement && !hasProcAtt){ toast('Blocked: attach the retained quotes / PV before sending to Finance.','bad'); return; }
-  Object.assign(r,{clausePackId:f.clausePackId,supplierId:f.supplierId,instrumentType:f.instrumentType,negotiated:f.negotiated||reqTotal(r),procNotes:f.procNotes});
+  const baseHT=f.negotiated||reqTotal(r); const exo=f.tvaExonere==='yes'; const tva=exo?0:baseHT*((f.taxPct||0)/100); const grand=baseHT+(f.transport||0)+tva;
+  Object.assign(r,{clausePackId:f.clausePackId,supplierId:f.supplierId,instrumentType:f.instrumentType,negotiated:baseHT,taxPct:f.taxPct||0,transport:f.transport||0,tvaExonere:exo,grandTotal:grand,procNotes:f.procNotes});
   _procAtt.forEach(a=>{a.stage='proc';r.attachments.push(a);});
   addComment(r,f.note);
   pushHist(r,'PENDING_FUNDING','Method: '+(byId('clausePacks',f.clausePackId)||{}).name);
@@ -883,7 +908,7 @@ function actToFinance(id){
 function fundModal(id){
   const r=byId('reqs',id);
   const budgets=C('budgets');
-  const amt=r.negotiated||reqTotal(r);
+  const amt=grandTotalOf(r);
   Modal.help('Funding',HELP.fund);
   Modal.open(`Funding review — ${esc(r.no)}`,`
     ${flowHtml(r)}
@@ -898,7 +923,7 @@ function fundModal(id){
 }
 function actFund(id){
   const f=readForm([{k:'budgetId',req:true},{k:'fundingRef',req:true},{k:'note'}]); if(!f)return;
-  const r=byId('reqs',id); const amt=r.negotiated||reqTotal(r);
+  const r=byId('reqs',id); const amt=grandTotalOf(r);
   const b=byId('budgets',f.budgetId);
   if(b && (b.amount-b.committed-b.spent)<amt && !confirm('Warning: this commitment exceeds the available balance on '+b.code+'. Proceed anyway?'))return;
   if(b){b.committed=(b.committed||0)+amt;}
@@ -943,7 +968,7 @@ function genInstrument(id){
   r.instrumentAt=nowIso();
   pushHist(r,'INSTRUMENT','Instrument '+r.instrumentNo+' generated — awaiting physical signature');
   // create AP invoice shell
-  col('ap').unshift({id:uid('ap'),orgId:r.orgId,no:seqNo('AP',C('ap'),'no'),supplierId:r.supplierId,reqId:r.id,ref:r.instrumentNo,desc:r.title,amount:r.fundedAmount||reqTotal(r),due:'',status:'PENDING',createdAt:nowIso()});
+  col('ap').unshift({id:uid('ap'),orgId:r.orgId,no:seqNo('AP',C('ap'),'no'),supplierId:r.supplierId,reqId:r.id,ref:r.instrumentNo,desc:r.title,amount:r.grandTotal||r.fundedAmount||reqTotal(r),due:'',status:'PENDING',createdAt:nowIso()});
   audit('INSTRUMENT_GEN',r.instrumentNo); save(); refreshNav(); nav(currentView);
   toast(r.instrumentNo+' generated. Print it and obtain the '+(Org().flow.finalLabel||'DG')+' signature.','ok');
   printInstrument(id);
@@ -963,7 +988,7 @@ function printInstrument(id){
   const r=byId('reqs',id); const org=byId('orgs',r.orgId);
   const sup=byId('suppliers',r.supplierId)||{}; const pack=byId('clausePacks',r.clausePackId)||{clauses:[]};
   const typeLbl={BC:'BON DE COMMANDE',LC:'LETTRE DE COMMANDE',CONTRAT:'CONTRAT / MARCHÉ',SC:'CONTRAT DE PRESTATION DE SERVICES'}[r.instrumentType]||'BON DE COMMANDE';
-  const amt=r.fundedAmount||reqTotal(r);
+  const amt=grandTotalOf(r); const baseHT=r.negotiated||reqTotal(r); const tvaAmt=r.tvaExonere?0:baseHT*((r.taxPct||0)/100);
   const z=$('printZone');
   z.innerHTML=`<div style="font-family:Arial;color:#152435;padding:34px;max-width:820px;margin:auto">
     <div style="display:flex;justify-content:space-between;border-bottom:4px solid #1B5CC4;padding-bottom:12px">
@@ -980,6 +1005,9 @@ function printInstrument(id){
     <table style="width:100%;border-collapse:collapse;margin-top:16px;font-size:13px">
       <tr style="background:#0E2A4F;color:#fff"><th style="padding:7px;text-align:left">Désignation</th><th style="padding:7px">Qté</th><th style="padding:7px">Unité</th><th style="padding:7px;text-align:right">P.U.</th><th style="padding:7px;text-align:right">Montant</th></tr>
       ${(r.items||[]).map(i=>`<tr><td style="border:1px solid #D8E2EF;padding:7px">${esc(i.desc)}</td><td style="border:1px solid #D8E2EF;padding:7px;text-align:center">${fmtN(i.qty)}</td><td style="border:1px solid #D8E2EF;padding:7px;text-align:center">${esc(i.unit)}</td><td style="border:1px solid #D8E2EF;padding:7px;text-align:right">${fmtN(i.est)}</td><td style="border:1px solid #D8E2EF;padding:7px;text-align:right">${fmtN(i.qty*i.est)}</td></tr>`).join('')}
+      <tr><td colspan="4" style="padding:6px 8px;text-align:right;color:#0E2A4F">Montant HT</td><td style="padding:6px 8px;text-align:right">${fmtN(baseHT)}</td></tr>
+      ${r.transport?`<tr><td colspan="4" style="padding:6px 8px;text-align:right;color:#0E2A4F">Transport / livraison</td><td style="padding:6px 8px;text-align:right">${fmtN(r.transport)}</td></tr>`:''}
+      <tr><td colspan="4" style="padding:6px 8px;text-align:right;color:#0E2A4F">TVA ${r.tvaExonere?'(exonérée)':((r.taxPct||0)+'%')}</td><td style="padding:6px 8px;text-align:right">${r.tvaExonere?'0':fmtN(tvaAmt)}</td></tr>
       <tr><td colspan="4" style="padding:8px;text-align:right;font-weight:800;color:#0E2A4F">MONTANT TOTAL TTC</td><td style="padding:8px;text-align:right;font-weight:800;background:#EAF2FC">${fmtN(amt)} ${esc(org.currency)}</td></tr>
     </table>
     <div style="margin-top:18px"><b style="color:#0E2A4F;font-size:13px">CLAUSES CONTRACTUELLES APPLICABLES — ${esc(pack.name||'')}</b>
@@ -1338,7 +1366,7 @@ crud('hr.train',{title:'Training',crumb:'Human Resources',col:'training',seq:['T
   head:['Ref','Training','Audience','Date','Provider','Status'],
   row:r=>[esc(r.code),`<b>${esc(r.name)}</b>`,esc(r.audience),r.date?fmtD(r.date):'—',esc(r.provider),statusBadge(r.status)],
   fields:[{k:'name',label:'Training title',req:true,ph:'e.g. Micro-learning hebdo passation des marchés'},{k:'audience',label:'Audience'},{k:'date',label:'Date',type:'date'},{k:'provider',label:'Provider / trainer'},{k:'status',label:'Status',type:'select',opts:[['PLANNED','Planned'],['COMPLETED','Delivered'],['ONHOLD','Postponed']]},{k:'notes',label:'Content / outcome',type:'textarea',full:true}]});
-crud('hr.leave',{title:'Leave Management',crumb:'Human Resources',col:'leave',seq:['LVE','code'],addLabel:'Record leave',help:'leave',
+crud('hr.leave',{title:'Leave Management',crumb:'Human Resources',col:'leave',seq:['LVE','code'],addLabel:'Record leave',help:'leave',extraAct:r=>r.status==='PENDING'?` <button class="btn ok sm" onclick="approveLeave('${r.id}',true)">Approve</button> <button class="btn bad sm" onclick="approveLeave('${r.id}',false)">Reject</button>`:'',
   head:['Ref','Employee','Type','From','To','Days','Status'],
   row:r=>[esc(r.code),esc(r.employee),esc(r.type),r.from?fmtD(r.from):'—',r.to?fmtD(r.to):'—',esc(String(r.days||'')),statusBadge(r.status)],
   fields:[{k:'employee',label:'Employee',req:true},{k:'type',label:'Leave type',type:'select',opts:['Annual','Sick','Maternity/Paternity','Special','Unpaid']},{k:'from',label:'From',type:'date',req:true},{k:'to',label:'To',type:'date',req:true},{k:'days',label:'Working days',type:'number'},{k:'status',label:'Status',type:'select',opts:[['PENDING','Awaiting approval'],['APPROVED','Approved'],['REJECTED','Rejected']]}]});
@@ -1548,13 +1576,16 @@ Views['adm.flow']={title:'Workflow Configuration',crumb:'Administration',help:HE
       ${field({k:'requireAttachmentsProcurement',label:'Block “Send to Finance” without procurement attachments',type:'select',opts:[['yes','Yes — enforced (recommended)'],['no','No']]},fl.requireAttachmentsProcurement?'yes':'no')}
       ${field({k:'requireQuotesRequisition',label:'Require requester to attach quotes before submitting',type:'select',opts:[['no','No — optional'],['yes','Yes — enforced']]},fl.requireQuotesRequisition?'yes':'no')}
     </div>
+    <div class="grid2">
+      ${field({k:'vendorApproverRole',label:'Who approves new vendors',type:'select',opts:[['dg','Final Authority (DG)'],['orgadmin','Organization Admin'],['finance','Finance Officer'],['procurement','Procurement (self-approve)']]},fl.vendorApproverRole||'dg')}
+    </div>
     <div class="btnRow"><button class="btn" onclick="saveFlow()">Save workflow settings</button></div></div>
     <div class="card"><h3>Chain preview</h3>${flowHtml({status:'DRAFT'})}</div>`;
 }};
 function saveFlow(){
-  const f=readForm([{k:'approverLabel'},{k:'finalLabel'},{k:'requireAttachmentsProcurement'},{k:'requireQuotesRequisition'}]);
+  const f=readForm([{k:'approverLabel'},{k:'finalLabel'},{k:'requireAttachmentsProcurement'},{k:'requireQuotesRequisition'},{k:'vendorApproverRole'}]);
   const o=Org();
-  Object.assign(o.flow,{approverLabel:f.approverLabel,finalLabel:f.finalLabel,requireAttachmentsProcurement:f.requireAttachmentsProcurement==='yes',requireQuotesRequisition:f.requireQuotesRequisition==='yes'});
+  Object.assign(o.flow,{approverLabel:f.approverLabel,finalLabel:f.finalLabel,requireAttachmentsProcurement:f.requireAttachmentsProcurement==='yes',requireQuotesRequisition:f.requireQuotesRequisition==='yes',vendorApproverRole:f.vendorApproverRole});
   audit('FLOW_CONFIG',JSON.stringify(o.flow)); save(); toast('Workflow configuration saved.','ok');
 }
 
@@ -1626,7 +1657,7 @@ function orgForm(id){
 function saveOrg(id){
   const f=readForm([{k:'name',req:true},{k:'short'},{k:'country',req:true},{k:'city'},{k:'currency'},{k:'legal'}]); if(!f)return;
   let o=id?byId('orgs',id):null;
-  if(!o){ o={id:uid('org'),active:true,createdAt:nowIso(),flow:{approverRole:'approver',finalRole:'dg',requireAttachmentsProcurement:true,requireQuotesRequisition:false,finalLabel:'Director General',approverLabel:'Section Head'}}; col('orgs').push(o); }
+  if(!o){ o={id:uid('org'),active:true,createdAt:nowIso(),flow:{approverRole:'approver',finalRole:'dg',requireAttachmentsProcurement:true,requireQuotesRequisition:false,vendorApproverRole:'dg',finalLabel:'Director General',approverLabel:'Section Head'}}; col('orgs').push(o); }
   Object.assign(o,f);
   audit('ORG_SAVE',o.name); save(); Modal.close(); nav('sa.orgs');
   if(!id)toast('Organization created. Now create its Organization Admin account.','ok');
@@ -1941,7 +1972,7 @@ async function createDemoOrg(){
   const oid=uid('org');
   const org={id:oid,name:'Team21 Trading Co. (Demo)',short:'T21TRADE',country:'Cameroon',city:'Yaoundé',currency:'XAF',legal:'Sample tenant — demonstrates multi-organization isolation',active:true,createdAt:nowIso(),
     sections:[{id:uid('sec'),name:'Sales',approverId:''},{id:uid('sec'),name:'Operations',approverId:''}],
-    flow:{approverRole:'approver',finalRole:'dg',requireAttachmentsProcurement:true,requireQuotesRequisition:false,finalLabel:'Managing Director',approverLabel:'Head of Department'}};
+    flow:{approverRole:'approver',finalRole:'dg',requireAttachmentsProcurement:true,requireQuotesRequisition:false,vendorApproverRole:'dg',finalLabel:'Managing Director',approverLabel:'Head of Department'}};
   col('orgs').push(org);
   const pw=await sha256('Demo@2026');
   const mk=(un,name,role)=>({id:uid('u'),orgId:oid,username:un,name,role,active:true,passHash:pw,createdAt:nowIso()});
@@ -1965,6 +1996,289 @@ bid:`<h4>Comparative analysis (Règle des Trois Devis)</h4><ol><li>Pick 2–3 su
 gsearch:`<p>Use the top search box to find any requisition, supplier, item, employee or customer by code or name, then jump straight to it.</p>`
 });
 
+
+/* =====================================================================
+   V1.2 — COMMERCIAL-GRADE UPGRADE
+   Bilingual EN/FR · open requisitioning + dynamic sections · vendor
+   approval workflow · tax/transport/TVA on quotes · all-module accounts
+   · expanded Super Admin (modules, account editor, reports centre)
+   © ForTe Tools Is40v31 – Innocent Forteh
+===================================================================== */
+
+/* ---------- i18n (translate-by-English-source) ---------- */
+const L={
+ // top bar / chrome
+ 'Sign out':'Déconnexion','Search records…  (Enter)':'Rechercher…  (Entrée)',
+ // groups
+ 'Overview':'Vue d’ensemble','Procurement':'Passation des Marchés','Finance & Accounting':'Finance & Comptabilité','Human Resources':'Ressources Humaines','Inventory & Warehouse':'Stocks & Magasin','Sales & CRM':'Ventes & CRM','Operations':'Opérations','Intelligence':'Intelligence','Administration':'Administration','Platform':'Plateforme','Platform · Super Admin':'Plateforme · Super Admin',
+ // nav items / titles
+ 'Dashboard':'Tableau de bord','Requisitions':'Réquisitions','My Approvals':'Mes approbations','Procurement Desk':'Bureau des Marchés','Funding Queue':'File de financement','Final Approval (DG)':'Approbation finale (DG)','PO / Contract Queue':'File Bons/Contrats','Suppliers':'Fournisseurs','Vendor Evaluation':'Évaluation fournisseurs','Vendor Approvals':'Validation fournisseurs','Contract Register':'Registre des contrats','General Ledger':'Grand livre','Accounts Payable':'Comptes fournisseurs','Accounts Receivable':'Comptes clients','Budgeting':'Budget','Asset Register':'Registre des immobilisations','Financial Reports':'États financiers','Employees':'Personnel','Payroll':'Paie','Recruitment':'Recrutement','Performance':'Performance','Training':'Formation','Leave':'Congés','Stock & Items':'Articles & stock','Receiving (GRN)':'Réception (BR)','Issue / Transfer':'Sortie / Transfert','Valuation':'Valorisation','Customers':'Clients','Quotations':'Devis','Sales Orders & Invoices':'Commandes & factures','Supply Chain':'Chaîne logistique','Manufacturing':'Production','Projects':'Projets','Maintenance':'Maintenance','BI & KPIs':'BI & Indicateurs','Audit Trail':'Piste d’audit','User Accounts':'Comptes utilisateurs','Workflow Config':'Configuration du circuit','Sections & Routing':'Sections & Routage','Clause Library':'Bibliothèque de clauses','Organization Profile':'Profil de l’organisation','Modules':'Modules','Reports Centre':'Centre de rapports','Organizations':'Organisations','All Accounts':'Tous les comptes','Platform Audit':'Audit plateforme','Data & Sync':'Données & Sync',
+ // common buttons
+ 'Cancel':'Annuler','Save':'Enregistrer','Close':'Fermer','Approve':'Approuver','Reject':'Rejeter','Return':'Retourner','Delete':'Supprimer','Edit':'Modifier',
+ // dashboard
+ 'Requisitions (all statuses)':'Réquisitions (tous statuts)','In the approval chain':'Dans le circuit d’approbation','Committed':'Engagé','Spent to date':'Dépensé à ce jour','My action queue':'Ma file d’action','Pending receipts':'Réceptions en attente','Pipeline by stage':'Pipeline par étape','All caught up':'Rien en attente',
+ // misc
+ 'Procurement · Super Admin':'Passation · Super Admin'
+};
+function TL(s){ if(s==null)return s; return (Session.lang==='fr'&&L[s])?L[s]:s; }
+window.loginLang=window.loginLang||'en';
+const LOGIN_STR={
+ en:{title:'Sign in',sub:'Accounts are issued centrally by your administrator. Self-registration is not available.',user:'Username',pass:'Password',btn:'Sign in securely',note:'Passwords are hashed (SHA-256) and never stored in clear text. Sessions expire after 60 minutes of inactivity. Forgot your password? Contact your organization administrator.',lang:'Language'},
+ fr:{title:'Connexion',sub:'Les comptes sont créés de façon centralisée par votre administrateur. L’auto-inscription n’est pas disponible.',user:'Nom d’utilisateur',pass:'Mot de passe',btn:'Se connecter',note:'Les mots de passe sont hachés (SHA-256) et jamais stockés en clair. Les sessions expirent après 60 minutes d’inactivité. Mot de passe oublié ? Contactez l’administrateur de votre organisation.',lang:'Langue'}
+};
+function setLoginLang(l){
+  window.loginLang=l;
+  const s=LOGIN_STR[l]||LOGIN_STR.en;
+  const set=(id,v)=>{const e=$(id);if(e)e.textContent=v;};
+  set('lg_title',s.title); set('lg_sub',s.sub); set('lg_userL',s.user); set('lg_passL',s.pass); set('lg_btn',s.btn); set('lg_note',s.note); set('lg_langL',s.lang);
+  document.querySelectorAll('.lgLangBtn').forEach(b=>b.classList.toggle('on',b.dataset.l===l));
+}
+function toggleLang(){
+  Session.lang=Session.lang==='fr'?'en':'fr';
+  if(Session.user){ Session.user.lang=Session.lang; save(); }
+  applyChrome(); buildNav(); if(currentView)nav(currentView);
+}
+function applyChrome(){
+  const so=$('btnSignout'); if(so)so.textContent=TL('Sign out');
+  const gi=$('gsInput'); if(gi)gi.placeholder=TL('Search records…  (Enter)');
+  const lb=$('langBtn'); if(lb)lb.textContent=Session.lang==='fr'?'EN':'FR';
+}
+
+/* ---------- bilingual status badge ---------- */
+const STATUS_FR={DRAFT:'Brouillon',PENDING_APPROVAL:'Attente Chef de Service',APPROVED:'Approuvé',PENDING_PROCUREMENT:'Chez la Passation',PENDING_FUNDING:'Attente de financement',FUNDED:'Financé — retour Passation',PENDING_FINAL:'Attente autorité finale',FINAL_APPROVED:'Entièrement approuvé',INSTRUMENT:'Instrument généré',SIGNED:'Signé',RECEIVING:'Réception en attente',RECEIVED:'Réceptionné',CLOSED:'Clôturé',REJECTED:'Rejeté',PENDING:'En attente',PAID:'Payé',PARTIAL:'Partiel',OPEN:'Ouvert',WON:'Gagné',LOST:'Perdu',ACTIVE:'Actif',INACTIVE:'Inactif',COMPLETED:'Terminé',IN_PROGRESS:'En cours',PLANNED:'Planifié',ONHOLD:'En pause'};
+function statusBadge(s){
+  const M={DRAFT:['b-grey','Draft'],PENDING_APPROVAL:['b-warn','Awaiting Section Head'],APPROVED:['b-blue','Approved'],PENDING_PROCUREMENT:['b-violet','With Procurement'],PENDING_FUNDING:['b-amber','Awaiting Funding'],FUNDED:['b-blue','Funded — back to Procurement'],PENDING_FINAL:['b-warn','Awaiting Final Authority'],FINAL_APPROVED:['b-ok','Fully Approved'],INSTRUMENT:['b-navy','Instrument Generated'],SIGNED:['b-ok','Signed'],RECEIVING:['b-amber','Pending Receipt'],RECEIVED:['b-ok','Received'],CLOSED:['b-grey','Closed'],REJECTED:['b-bad','Rejected'],PENDING:['b-warn','Pending'],PAID:['b-ok','Paid'],PARTIAL:['b-amber','Partial'],OPEN:['b-blue','Open'],WON:['b-ok','Won'],LOST:['b-bad','Lost'],ACTIVE:['b-ok','Active'],INACTIVE:['b-grey','Inactive'],COMPLETED:['b-ok','Completed'],IN_PROGRESS:['b-blue','In progress'],PLANNED:['b-grey','Planned'],ONHOLD:['b-warn','On hold']};
+  const m=M[s]||['b-grey',s];
+  const label=(Session.lang==='fr'&&STATUS_FR[s])?STATUS_FR[s]:m[1];
+  return `<span class="badge ${m[0]}">${esc(label)}</span>`;
+}
+
+/* ---------- totals with tax / transport / TVA ---------- */
+function grandTotalOf(r){
+  if(r.grandTotal!=null)return r.grandTotal;
+  const base=r.negotiated||reqTotal(r); const tr=r.transport||0; const tva=r.tvaExonere?0:base*((r.taxPct||0)/100);
+  return base+tr+tva;
+}
+function procCalc(){
+  const base=parseFloat(($('f_negotiated')||{}).value)||0;
+  const tr=parseFloat(($('f_transport')||{}).value)||0;
+  const exo=(($('f_tvaExonere')||{}).value)==='yes';
+  const pct=parseFloat(($('f_taxPct')||{}).value)||0;
+  const tva=exo?0:base*(pct/100); const ttc=base+tr+tva;
+  const box=$('procCalc'); if(box)box.innerHTML=`<b>Cost build-up:</b> Montant HT ${fmtN(base)} + Transport ${fmtN(tr)} + ${exo?'<span style="color:var(--ok)">TVA exonérée (0)</span>':'TVA '+pct+'% = '+fmtN(tva)} → <b>Total TTC ${fmtN(ttc)} ${esc(Org().currency)}</b>`;
+}
+
+/* ---------- Vendor approval workflow ---------- */
+function supForm(id){
+  const s=id?byId('suppliers',id):{};
+  const isNew=!id;
+  Modal.open((id?'Edit':'Add')+' supplier / vendor',`
+    ${isNew?'<div class="notice w">New vendors are submitted for approval before they can be used in procurement. Once approved they receive a confirmed vendor code and appear on the active vendor list.</div>':''}
+    <div class="grid2">${field({k:'name',label:'Supplier name',req:true},s.name)}${field({k:'category',label:'Category',req:true},s.category)}</div>
+    <div class="grid2">${field({k:'city',label:'City'},s.city)}${field({k:'phone',label:'Phone'},s.phone)}</div>
+    <div class="grid2">${field({k:'email',label:'Email',type:'email'},s.email)}${field({k:'taxId',label:'Tax ID / NIF'},s.taxId)}</div>
+    <div class="grid2">${field({k:'prequalified',label:'Pre-qualified (SOP 02)',type:'select',opts:[['no','No'],['yes','Yes']]},s.prequalified?'yes':'no')}${field({k:'notes',label:'Notes'},s.notes)}</div>
+    ${(!isNew&&(Session.user.role==='orgadmin'))?field({k:'status',label:'Status (admin override)',type:'select',opts:[['PENDING','Pending approval'],['ACTIVE','Active'],['INACTIVE','Suspended'],['REJECTED','Rejected']]},s.status||'PENDING'):''}
+  `,`<button class="btn ghost" onclick="Modal.close()">${TL('Cancel')}</button><button class="btn" onclick="saveSup('${id||''}')">${isNew?'Submit for approval':'Save'}</button>`);
+}
+function saveSup(id){
+  const base=[{k:'name',req:true},{k:'category',req:true},{k:'city'},{k:'phone'},{k:'email'},{k:'taxId'},{k:'prequalified'},{k:'notes'}];
+  if(id&&Session.user.role==='orgadmin')base.push({k:'status'});
+  const f=readForm(base); if(!f)return;
+  let s=id?byId('suppliers',id):null; let isNew=false;
+  if(!s){ isNew=true; s={id:uid('sup'),orgId:Session.user.orgId,code:seqNo('FRS',C('suppliers'),'code'),rating:0,status:'PENDING',createdAt:nowIso(),createdBy:Session.user.name}; col('suppliers').push(s); }
+  Object.assign(s,{name:f.name,category:f.category,city:f.city,phone:f.phone,email:f.email,taxId:f.taxId,prequalified:f.prequalified==='yes',notes:f.notes});
+  if(id&&f.status)s.status=f.status;
+  if(isNew){ const appr=(Org().flow&&Org().flow.vendorApproverRole)||'dg'; notifyRoles([appr],'New vendor "'+s.name+'" ('+s.code+') awaits approval','pr.vendorappr',s.id); audit('VENDOR_SUBMIT',s.code+' '+s.name); }
+  else audit('SUPPLIER_SAVE',s.code);
+  save(); Modal.close(); nav(currentView); toast(isNew?('Vendor '+s.code+' submitted for approval.'):'Supplier saved.','ok');
+}
+Views['pr.vendorappr']={title:'Vendor Approvals',crumb:'Procurement',render(el){
+  const pend=C('suppliers').filter(s=>s.status==='PENDING');
+  const rest=C('suppliers').filter(s=>s.status!=='PENDING');
+  el.innerHTML=`<div class="notice i">New vendors submitted by Procurement require approval here (as configured in Workflow Config — default: ${esc(roleLabel((Org().flow&&Org().flow.vendorApproverRole)||'dg'))}). Approving activates the vendor and confirms its code so Procurement can transact with it.</div>
+    <div class="card"><h3>Pending approval <span class="badge b-warn" style="margin-left:8px">${pend.length}</span></h3>
+    ${tbl(['Code','Vendor','Category','Submitted by','Tax ID','Actions'],pend.map(s=>[esc(s.code),`<b>${esc(s.name)}</b><div style="font-size:11px;color:var(--grey)">${esc(s.city||'')} ${esc(s.email||'')}</div>`,esc(s.category),esc(s.createdBy||'—'),esc(s.taxId||'—'),`<div class="rowAct"><button class="btn ok sm" onclick="vendorDecide('${s.id}',true)">✓ Approve</button><button class="btn bad sm" onclick="vendorDecide('${s.id}',false)">✕ Reject</button></div>`]),{emptyTitle:'No vendors awaiting approval'})}</div>
+    <div class="card"><h3>Vendor master</h3>${tbl(['Code','Vendor','Category','Status'],rest.map(s=>[esc(s.code),esc(s.name),esc(s.category),statusBadge(s.status)]),{emptyTitle:'No other vendors yet'})}</div>`;
+}};
+function vendorDecide(id,ok){
+  const s=byId('suppliers',id);
+  if(ok){ s.status='ACTIVE'; s.approvedBy=Session.user.name; s.approvedAt=nowIso(); audit('VENDOR_APPROVE',s.code+' '+s.name); notifyRoles(['procurement'],'Vendor "'+s.name+'" ('+s.code+') approved — now available','pr.suppliers',s.id); toast('Vendor '+s.code+' approved and activated.','ok'); }
+  else { const why=prompt('Reason for rejecting this vendor:')||''; s.status='REJECTED'; s.rejectNote=why; audit('VENDOR_REJECT',s.code+' '+why); notifyRoles(['procurement'],'Vendor "'+s.name+'" was rejected: '+why,'pr.suppliers',s.id); toast('Vendor rejected.','warn'); }
+  save(); nav(currentView);
+}
+
+/* ---------- Leave approval (HR process) ---------- */
+function approveLeave(id,ok){
+  const lv=byId('leave',id); lv.status=ok?'APPROVED':'REJECTED'; audit('LEAVE_'+(ok?'APPROVE':'REJECT'),lv.code); save(); nav(currentView); toast('Leave '+(ok?'approved':'rejected')+'.','ok');
+}
+
+/* ---------- Super Admin: modules per org ---------- */
+const MODULE_DEFS=[['finance','Finance & Accounting'],['hr','Human Resources'],['inventory','Inventory & Warehouse'],['sales','Sales & CRM'],['scm','Supply Chain'],['mfg','Manufacturing'],['projects','Projects'],['maint','Maintenance'],['bi','Business Intelligence']];
+Views['sa.modules']={title:'Modules',crumb:'Platform · Super Admin',render(el){
+  const orgs=col('orgs');
+  el.innerHTML=`<div class="notice i">Enable or disable modules per organization. Procurement, Administration and Intelligence-core stay available; toggles below control which module groups appear in each tenant's navigation.</div>
+   ${orgs.map(o=>{const m=o.modules||{}; return `<div class="card"><h3>${esc(o.name)}</h3><div style="display:flex;flex-wrap:wrap;gap:10px">${MODULE_DEFS.map(md=>`<label class="modToggle"><input type="checkbox" ${m[md[0]]!==false?'checked':''} onchange="toggleModule('${o.id}','${md[0]}',this.checked)"> ${esc(md[1])}</label>`).join('')}</div></div>`;}).join('')}`;
+}};
+function toggleModule(orgId,key,on){
+  const o=byId('orgs',orgId); o.modules=o.modules||{}; o.modules[key]=on; audit('MODULE_TOGGLE',o.short+' '+key+'='+on); save(); toast((on?'Enabled ':'Disabled ')+key+' for '+o.short,'ok');
+}
+
+/* ---------- Super Admin: full account editor ---------- */
+const ALL_ROLES=[['requisitioner','Requisitioner'],['approver','Approver / Section Head'],['procurement','Procurement Officer'],['finance','Finance Officer'],['dg','Final Authority (DG)'],['receiver','Receiving Officer'],['store','Warehouse / Store'],['hr','HR Officer'],['sales','Sales / CRM'],['viewer','Viewer / Auditor'],['orgadmin','Organization Admin'],['superadmin','Super Administrator']];
+Views['sa.users']={title:'All Accounts',crumb:'Platform · Super Admin',help:HELPref('saUsers'),render(el){
+  const q=(window._suSearch||'').toLowerCase();
+  const us=col('users').filter(u=>!q||(u.username+' '+u.name+' '+u.role).toLowerCase().includes(q));
+  el.innerHTML=`<div class="searchBar"><button class="btn" onclick="saUserEdit()">＋ Create account</button><input id="suSearch" placeholder="Filter by name / username / role…" value="${esc(window._suSearch||'')}" oninput="window._suSearch=this.value;clearTimeout(window._sut);window._sut=setTimeout(()=>nav('sa.users'),250)"></div>
+  <div class="card">${tbl(['Username','Name','Organization','Responsibility','Last login','Status','Actions'],us.map(u=>[`<b>${esc(u.username)}</b>`,esc(u.name),esc((byId('orgs',u.orgId)||{}).short||(u.role==='superadmin'?'Platform':'—')),`<span class="badge b-blue">${esc(roleLabel(u.role))}</span>`,u.lastLogin?fmtDT(u.lastLogin):'never',u.active!==false?'<span class="badge b-ok">Active</span>':'<span class="badge b-bad">Off</span>',`<div class="rowAct"><button class="btn ghost sm" onclick="saUserEdit('${u.id}')">Edit</button><button class="btn sec sm" onclick="suResetPass('${u.id}')">Reset pw</button><button class="btn ghost sm" style="color:${u.active!==false?'var(--bad)':'var(--ok)'}" onclick="suToggleUser('${u.id}')">${u.active!==false?'Deactivate':'Reactivate'}</button></div>`]),{emptyTitle:'No accounts'})}</div>`;
+}};
+function saUserEdit(id){
+  const u=id?byId('users',id):{};
+  const orgs=col('orgs');
+  Modal.open((id?'Edit':'Create')+' account',`
+    <div class="grid2">${field({k:'username',label:'Username',req:true},u.username)}${field({k:'name',label:'Full name',req:true},u.name)}</div>
+    <div class="grid2">${field({k:'role',label:'Responsibility (role)',type:'select',req:true,opts:ALL_ROLES},u.role)}${field({k:'orgId',label:'Organization',type:'select',req:true,opts:orgs.map(o=>[o.id,o.name]).concat([['','— Platform (Super Admin only) —']])},u.orgId||'')}</div>
+    <div class="grid2">${field({k:'section',label:'Section / department'},u.section)}${field({k:'email',label:'Email',type:'email'},u.email)}</div>
+    ${id?'':field({k:'pass',label:'Initial password',req:true,ph:'Communicate securely'})}
+    ${id?'<div class="notice i">Change the responsibility to reassign what this account can do. Use “Reset pw” on the list to set a new password.</div>':''}
+  `,`<button class="btn ghost" onclick="Modal.close()">${TL('Cancel')}</button><button class="btn" onclick="saUserSave('${id||''}')">Save account</button>`);
+}
+async function saUserSave(id){
+  const fields=[{k:'username',req:true},{k:'name',req:true},{k:'role',req:true},{k:'orgId'},{k:'section'},{k:'email'}]; if(!id)fields.push({k:'pass',req:true});
+  const f=readForm(fields); if(!f)return;
+  if(f.role!=='superadmin'&&!f.orgId){ toast('Select an organization for this account.','bad'); return; }
+  if(!id&&col('users').some(x=>x.username.toLowerCase()===f.username.toLowerCase())){toast('Username already exists.','bad');return;}
+  let u=id?byId('users',id):null;
+  if(!u){ u={id:uid('u'),active:true,createdAt:nowIso(),passHash:await sha256(f.pass)}; col('users').push(u); }
+  Object.assign(u,{username:f.username,name:f.name,role:f.role,orgId:f.role==='superadmin'?(f.orgId||''):f.orgId,section:f.section,email:f.email});
+  audit('SA_USER_SAVE',u.username+' → '+f.role); save(); Modal.close(); nav('sa.users'); toast('Account saved.','ok');
+}
+async function suResetPass(id){ const p=prompt('New password:'); if(!p)return; const u=byId('users',id); u.passHash=await sha256(p); u.mustChange=true; audit('SA_PASSRESET',u.username); save(); toast('Password reset for '+u.username+'.','ok'); }
+function suToggleUser(id){ const u=byId('users',id); u.active=u.active===false; audit('SA_USER_TOGGLE',u.username); save(); nav('sa.users'); }
+
+/* ---------- Reports centre (Super Admin + Org Admin) ---------- */
+Views['rep.center']={title:'Reports Centre',crumb:'Reports',help:HELPref('reports'),render(el){
+  const sa=Session.user.role==='superadmin';
+  el.innerHTML=`<div class="notice i">Generate printable, signed-off registers and export any of them to CSV. ${sa?'As Super Admin these span all organizations.':'These cover your organization.'}</div>
+  <div class="grid2">
+   ${repCard('procurement','Procurement register','All requisitions with status, method, supplier and amount.')}
+   ${repCard('instruments','PO / Contract register','All generated instruments (BC / LC / Contrat) and their amounts.')}
+   ${repCard('budget','Budget execution','Allocated vs committed vs spent per budget line.')}
+   ${repCard('suppliers','Vendor master','All vendors with code, category, status and rating.')}
+   ${repCard('users','User accounts','All accounts, roles and last login.')}
+   ${repCard('audit','Audit log','Recent sensitive actions with user and timestamp.')}
+  </div>`;
+}};
+function repCard(kind,title,desc){ return `<div class="card"><h3>${esc(title)}</h3><div style="font-size:12px;color:var(--mut);margin-bottom:10px">${esc(desc)}</div><div class="btnRow"><button class="btn sec" onclick="printReport('${kind}')">🖨️ Print</button><button class="btn ghost" onclick="reportCSV('${kind}')">⬇ CSV</button></div></div>`; }
+function reportData(kind){
+  const sa=Session.user.role==='superadmin';
+  const R=name=>sa?col(name):C(name);
+  if(kind==='procurement'){ return {title:'Procurement Register',head:['N°','Title','Section','Method','Supplier','Amount','Status'],rows:R('reqs').map(r=>[r.no,r.title,r.section||'',(byId('clausePacks',r.clausePackId)||{}).name||'',(byId('suppliers',r.supplierId)||{}).name||'',fmtN(grandTotalOf(r)),r.status])}; }
+  if(kind==='instruments'){ return {title:'PO / Contract Register',head:['Instrument','Type','Requisition','Supplier','Amount','Date'],rows:R('reqs').filter(r=>r.instrumentNo).map(r=>[r.instrumentNo,r.instrumentType||'',r.no,(byId('suppliers',r.supplierId)||{}).name||'',fmtN(grandTotalOf(r)),r.instrumentAt?fmtD(r.instrumentAt):''])}; }
+  if(kind==='budget'){ return {title:'Budget Execution',head:['Code','Line','Year','Allocated','Committed','Spent','Available'],rows:R('budgets').map(b=>[b.code,b.line,b.year,fmtN(b.amount),fmtN(b.committed),fmtN(b.spent),fmtN(b.amount-b.committed-b.spent)])}; }
+  if(kind==='suppliers'){ return {title:'Vendor Master',head:['Code','Vendor','Category','City','Status','Rating'],rows:R('suppliers').map(s=>[s.code,s.name,s.category||'',s.city||'',s.status||'',s.rating?s.rating.toFixed(1):''])}; }
+  if(kind==='users'){ return {title:'User Accounts',head:['Username','Name','Org','Role','Last login','Active'],rows:R('users').map(u=>[u.username,u.name,(byId('orgs',u.orgId)||{}).short||'',roleLabel(u.role),u.lastLogin?fmtDT(u.lastLogin):'never',u.active!==false?'Yes':'No'])}; }
+  if(kind==='audit'){ return {title:'Audit Log',head:['When','User','Action','Detail'],rows:R('audit').slice(0,500).map(a=>[fmtDT(a.at),a.user,a.action,a.detail||''])}; }
+  return {title:'',head:[],rows:[]};
+}
+function printReport(kind){
+  const d=reportData(kind); const org=Session.user.role==='superadmin'?{name:'ForTé Platform',currency:''}:Org();
+  const z=$('printZone');
+  z.innerHTML=`<div style="font-family:Arial;color:#152435;padding:30px;max-width:1000px;margin:auto">
+    <div style="display:flex;justify-content:space-between;border-bottom:3px solid #1B5CC4;padding-bottom:10px">
+      <div><div style="font-size:17px;font-weight:800;color:#0E2A4F">${esc(org.name)}</div><div style="font-size:12px;color:#5B6B7E">${esc(d.title)} · ${fmtD(nowIso())}</div></div>
+      <div style="text-align:right;font-size:11px;color:#5B6B7E">Généré par ForTé ERP Pro<br>${esc(Session.user.name)}</div></div>
+    <table style="width:100%;border-collapse:collapse;margin-top:14px;font-size:11.5px">
+      <tr style="background:#0E2A4F;color:#fff">${d.head.map(h=>`<th style="padding:6px;text-align:left">${esc(h)}</th>`).join('')}</tr>
+      ${d.rows.map((r,i)=>`<tr style="background:${i%2?'#F4F8FD':'#fff'}">${r.map(c=>`<td style="border:1px solid #D8E2EF;padding:5px">${esc(String(c))}</td>`).join('')}</tr>`).join('')}
+    </table>
+    <div style="margin-top:10px;font-size:11px;color:#5B6B7E">${d.rows.length} record(s).</div>
+    <table style="width:100%;margin-top:30px;font-size:12px"><tr><td style="width:50%;text-align:center"><div style="border-top:1.5px solid #152435;margin:40px 40px 6px"></div>Établi par</td><td style="text-align:center"><div style="border-top:1.5px solid #152435;margin:40px 40px 6px"></div>Visa autorité</td></tr></table>
+    <div style="margin-top:20px;text-align:center;font-size:10px;color:#8A94A3;border-top:1px solid #D8E2EF;padding-top:8px">© ForTe Tools Is40v31 – Innocent Forteh · ForTé ERP Pro V1.0</div></div>`;
+  z.style.display='block'; window.print(); setTimeout(()=>z.style.display='none',400);
+}
+function reportCSV(kind){
+  const d=reportData(kind);
+  const esc2=v=>'"'+String(v).replace(/"/g,'""')+'"';
+  const lines=[d.head.map(esc2).join(',')].concat(d.rows.map(r=>r.map(esc2).join(',')));
+  const a=document.createElement('a'); a.href='data:text/csv;charset=utf-8,%EF%BB%BF'+encodeURIComponent(lines.join('\n')); a.download=kind+'_'+today()+'.csv'; a.click(); toast('Report exported to CSV.','ok');
+}
+
+/* ---------- Migration (idempotent) for existing databases ---------- */
+async function migrate(){
+  if(!DB||!DB.orgs)return; let changed=false;
+  DB.orgs.forEach(o=>{ if(!o.modules){ o.modules={finance:true,hr:true,inventory:true,sales:true,scm:true,mfg:true,projects:true,maint:true,bi:true}; changed=true; } if(o.flow&&!o.flow.vendorApproverRole){ o.flow.vendorApproverRole='dg'; changed=true; } });
+  (DB.suppliers||[]).forEach(s=>{ if(!s.status){ s.status='ACTIVE'; changed=true; } });
+  // ensure INSAPT has the full module account set
+  const insapt=byId('orgs','org_insapt');
+  if(insapt){
+    const need=[['hr.insapt','Responsable RH','hr','Ressources Humaines'],['sales.insapt','Chargé Ventes/CRM','sales','Ventes'],['inv.insapt','Gestionnaire de Stock','store','Magasin'],['audit.insapt','Auditeur Interne','viewer','Contrôle Interne']];
+    for(const [un,nm,role,sec] of need){ if(!DB.users.some(u=>u.username===un)){ DB.users.push({id:uid('u'),orgId:'org_insapt',username:un,name:nm,role,section:sec,active:true,createdAt:nowIso(),passHash:await sha256('Insapt@2026'),mustChange:true}); changed=true; } }
+  }
+  if(DB.meta&&DB.meta.version!=='1.2'){ DB.meta.version='1.2'; changed=true; }
+  if(changed)save();
+}
+
+/* ---------- Help additions ---------- */
+Object.assign(HELP,{
+ saUsers:`<h4>Central account management (platform-wide)</h4><ol><li><b>Create account</b> or <b>Edit</b> any account across any organization.</li><li>The <b>Responsibility</b> field assigns exactly what the account can do — change it to reassign duties.</li><li><b>Reset pw</b> issues a new password; <b>Deactivate</b> disables access while keeping history.</li></ol>`,
+ reports:`<h4>Reports centre</h4><p>Generate printable registers (procurement, instruments, budget execution, vendors, accounts, audit) with signature blocks, or export any to CSV. Super Admin reports span all organizations; Org Admin reports cover the current organization.</p>`,
+ vendorAppr:`<p>New vendors submitted by Procurement land here for approval by the configured authority (default DG). Approving activates the vendor and confirms its code so it can be used in requisitions and instruments.</p>`
+});
+
+
+
+/* =====================================================================
+   V1.3 — FULL BILINGUAL COVERAGE
+   Extends the L{} dictionary and adds a runtime DOM translation layer:
+   every rendered UI string (views, modals, toasts, nav) is translated
+   to French when the language is FR. Dynamic data (names, codes,
+   amounts, French legal text) is never a dictionary key, so it is left
+   untouched. © ForTe Tools Is40v31 – Innocent Forteh
+===================================================================== */
+Object.assign(L, {"⇅ Push to cloud now": "⇅ Pousser vers le cloud", "⇅ Sync": "⇅ Synchroniser", "＋ Add customer": "＋ Ajouter un client", "＋ Add employee": "＋ Ajouter un employé", "＋ Add item": "＋ Ajouter un article", "＋ Add line": "＋ Ajouter une ligne", "＋ Add payable": "＋ Ajouter une dette fournisseur", "＋ Add receivable": "＋ Ajouter une créance", "＋ Add review": "＋ Ajouter une évaluation", "＋ Add section": "＋ Ajouter une section", "＋ Add supplier": "＋ Ajouter un fournisseur", "＋ Add training": "＋ Ajouter une formation", "＋ Bill of Materials": "＋ Nomenclature", "＋ Budget line": "＋ Ligne budgétaire", "＋ Create account": "＋ Créer un compte", "＋ Create demo organization": "＋ Créer une organisation démo", "＋ Create organization": "＋ Créer une organisation", "＋ Demand plan line": "＋ Ligne de plan de besoins", "＋ Evaluation": "＋ Évaluation", "＋ Journal entry": "＋ Écriture comptable", "＋ New clause pack": "＋ Nouveau dossier de clauses", "＋ New project": "＋ Nouveau projet", "＋ New quotation": "＋ Nouveau devis", "＋ New requisition": "＋ Nouvelle réquisition", "＋ New sales order": "＋ Nouvelle commande client", "＋ Open vacancy": "＋ Ouvrir un poste", "＋ Org admin": "＋ Admin d’organisation", "＋ Record leave": "＋ Enregistrer un congé", "＋ Register asset": "＋ Enregistrer une immobilisation", "＋ Schedule maintenance": "＋ Planifier une maintenance", "＋ Work order": "＋ Ordre de travail", "▶ Run payroll for this month": "▶ Exécuter la paie du mois", "⚠️ Stock below reorder level": "⚠️ Stock sous le seuil de réapprovisionnement", "⤓ Pull from cloud": "⤓ Récupérer du cloud", "⬆ Import CSV": "⬆ Importer CSV", "⬆ Restore backup": "⬆ Restaurer la sauvegarde", "⬇ CSV": "⬇ CSV", "⬇ Export full backup (JSON)": "⬇ Exporter la sauvegarde complète (JSON)", "🖨️ Print": "🖨️ Imprimer", "— approver (optional) —": "— approbateur (facultatif) —", "— Finance will confirm —": "— la Finance confirmera —", "— Platform (Super Admin only) —": "— Plateforme (Super Admin uniquement) —", "Accounts Payable": "Comptes fournisseurs", "Accounts Receivable": "Comptes clients", "Action": "Action", "Actions": "Actions", "Active": "Actif", "Add supplier / vendor": "Ajouter un fournisseur", "Administration": "Administration", "All Accounts": "Tous les comptes", "All caught up": "Tout est à jour", "Allocated": "Alloué", "Asset Register": "Registre des immobilisations", "Assets": "Immobilisations", "Attach quotes / supporting documents": "Joindre les devis / pièces justificatives", "Audit log": "Journal d’audit", "Audit Trail": "Piste d’audit", "auto-routes": "achemine automatiquement", "Available": "Disponible", "Backup & restore": "Sauvegarde & restauration", "BI & KPIs": "BI & Indicateurs", "Bills of Materials": "Nomenclatures", "Budget execution (committed + spent)": "Exécution budgétaire (engagé + dépensé)", "Budget execution": "Exécution budgétaire", "Budget line": "Ligne budgétaire", "Budgeting": "Budget", "Business Intelligence & KPIs": "Business Intelligence & Indicateurs", "Business Intelligence": "Business Intelligence", "Category": "Catégorie", "Chain preview": "Aperçu du circuit", "Chart of accounts": "Plan comptable", "City": "Ville", "Chad": "Tchad", "Classification": "Classification", "Clause Library": "Bibliothèque de clauses", "Cloud backend (Google Apps Script)": "Backend cloud (Google Apps Script)", "Cloud sync is": "La synchronisation cloud est", "Code / Barcode": "Code / Code-barres", "Code": "Code", "Comment to the approver (optional)": "Commentaire à l’approbateur (facultatif)", "Committed (FCFA)": "Engagé (FCFA)", "Committed": "Engagé", "Communicate securely to the user": "Communiquer de façon sécurisée à l’utilisateur", "Communicate securely": "Communiquer de façon sécurisée", "Contract Register": "Registre des contrats", "Country": "Pays", "Create account": "Créer un compte", "Create organization": "Créer une organisation", "Currency": "Devise", "Customers": "Clients", "Dashboard": "Tableau de bord", "Data & Cloud Sync": "Données & Synchronisation cloud", "Data & Sync": "Données & Sync", "Deactivate": "Désactiver", "Del": "Suppr", "Delay:": "Délai :", "Delivery timeliness (1–5)": "Respect des délais de livraison (1–5)", "Demand planning": "Planification des besoins", "Department": "Service", "Description": "Description", "Detail": "Détail", "Edit clause pack": "Modifier le dossier de clauses", "Edit supplier / vendor": "Modifier le fournisseur", "Edit": "Modifier", "Email": "E-mail", "Employees": "Personnel", "Estimated total:": "Total estimé :", "Evaluate": "Évaluer", "Evaluation comments": "Commentaires d’évaluation", "Evaluations": "Évaluations", "Execution": "Exécution", "Export this table to CSV": "Exporter ce tableau en CSV", "Factory reset (danger)": "Réinitialisation d’usine (danger)", "Filter by name / username / role…": "Filtrer par nom / identifiant / rôle…", "Final (DG)": "Final (DG)", "Final Approval (DG)": "Approbation finale (DG)", "Final Approval": "Approbation finale", "Final Authority (DG)": "Autorité finale (DG)", "Final Authority approval": "Approbation de l’autorité finale", "Finance & Accounting": "Finance & Comptabilité", "Finance Officer": "Agent des Finances", "Finance: funding": "Finance : financement", "Financial Reports": "États financiers", "ForTé Platform — Super Admin": "Plateforme ForTé — Super Admin", "ForTé Platform Owner": "Propriétaire de la plateforme ForTé", "Full name": "Nom complet", "Funding Queue — Finance": "File de financement — Finance", "Funding Queue": "File de financement", "Funding": "Financement", "General Ledger": "Grand livre", "Goods / services received": "Biens / services reçus", "Help for this window": "Aide pour cette fenêtre", "Hired": "Recruté", "HR Officer": "Responsable RH", "Human Resources": "Ressources Humaines", "Identity": "Identité", "In the approval chain": "Dans le circuit d’approbation", "Indicative delay": "Délai indicatif", "Indicator": "Indicateur", "Initial password": "Mot de passe initial", "Instruments issued": "Instruments émis", "Intelligence": "Intelligence", "Inventory & Warehouse": "Stocks & Magasin", "Inventory Valuation": "Valorisation des stocks", "Issue / Transfer Stock": "Sortie / Transfert de stock", "Issue / Transfer": "Sortie / Transfert", "Issue stock to a service": "Sortir du stock vers un service", "Issue stock": "Sortir du stock", "Issued to (service / person)": "Attribué à (service / personne)", "Item lines": "Lignes d’articles", "Item": "Article", "Items at/below reorder": "Articles au/sous le seuil", "Journal empty": "Journal vide", "Journal": "Journal", "Justification of the need": "Justification du besoin", "Label for final authority": "Libellé de l’autorité finale", "Label for first approver": "Libellé du premier approbateur", "Language": "Langue", "Last login": "Dernière connexion", "Leave Management": "Gestion des congés", "Leave": "Congés", "Legal / regulatory framework shown on instruments": "Cadre juridique / réglementaire affiché sur les instruments", "Legal basis (articles / decree / manual chapter)": "Base légale (articles / décret / chapitre du manuel)", "Legal framework (appears on printed instruments)": "Cadre juridique (apparaît sur les instruments imprimés)", "Line items": "Postes / lignes", "Line value": "Valeur de la ligne", "Logistics & shipments": "Logistique & expéditions", "Maintenance & Asset Lifecycle": "Maintenance & Cycle de vie des actifs", "Maintenance": "Maintenance", "Manufacturing / Production": "Fabrication / Production", "Manufacturing": "Production", "Method:": "Méthode :", "Modules": "Modules", "Movements recorded": "Mouvements enregistrés", "My action queue": "Ma file d’action", "My Approvals — Section Head": "Mes approbations — Chef de Service", "My Approvals": "Mes approbations", "Name": "Nom", "New clause pack": "Nouveau dossier de clauses", "New Purchase Requisition": "Nouvelle réquisition d’achat", "No — optional": "Non — facultatif", "No BOMs defined": "Aucune nomenclature définie", "No demand plan yet": "Aucun plan de besoins pour l’instant", "No instruments issued yet.": "Aucun instrument émis pour l’instant.", "No instruments yet": "Aucun instrument pour l’instant", "No items currently need your action.": "Aucun élément ne requiert votre action pour l’instant.", "No movements yet": "Aucun mouvement pour l’instant", "No payroll runs yet": "Aucune paie exécutée pour l’instant", "No postings yet": "Aucune écriture pour l’instant", "No processed requisitions yet.": "Aucune réquisition traitée pour l’instant.", "No receipts posted yet": "Aucune réception enregistrée pour l’instant", "No records yet": "Aucun enregistrement pour l’instant", "No requisitions currently await funding confirmation.": "Aucune réquisition n’attend de confirmation de financement.", "No requisitions currently await your approval.": "Aucune réquisition n’attend votre approbation.", "No requisitions yet": "Aucune réquisition pour l’instant", "No vendors awaiting approval": "Aucun fournisseur en attente d’approbation", "No work orders": "Aucun ordre de travail", "No": "Non", "not configured": "non configuré", "Notes": "Notes", "Nothing awaits final approval.": "Rien n’attend d’approbation finale.", "Nothing pending": "Rien en attente", "Nothing to receive": "Rien à réceptionner", "Notifications": "Notifications", "On hand": "En stock", "One system. Every process. Fully governed.": "Un seul système. Tous les processus. Entièrement gouverné.", "Operations": "Opérations", "Org": "Org", "Organization Admin": "Admin d’organisation", "Organization name": "Nom de l’organisation", "Organization Profile": "Profil de l’organisation", "Organizations": "Organisations", "Organization": "Organisation", "Overall": "Global", "Overview": "Vue d’ensemble", "Pack name": "Nom du dossier", "Password": "Mot de passe", "Payables open": "Dettes fournisseurs ouvertes", "Payables vs receivables": "Dettes vs créances", "Payroll": "Paie", "Pending approval": "En attente d’approbation", "Pending receipt": "Réception en attente", "Pending receipts": "Réceptions en attente", "Performance Management": "Gestion de la performance", "Performance": "Performance", "Phone": "Téléphone", "Physically signed": "Signé physiquement", "Pipeline by stage": "Pipeline par étape", "Plan projects, allocate resources, track time and monitor budget vs actual costing.": "Planifiez les projets, allouez les ressources, suivez le temps et surveillez le budget vs le coût réel.", "Platform Audit": "Audit plateforme", "Platform · Super Admin": "Plateforme · Super Admin", "Platform": "Plateforme", "PO / Contract generated": "BC / Contrat généré", "PO / Contract Queue": "File BC / Contrats", "PO / Contract register": "Registre des BC / Contrats", "Position": "Poste", "Pre-qualified (SOP 02)": "Pré-qualifié (SOP 02)", "Pre-qualified": "Pré-qualifié", "Price competitiveness (1–5)": "Compétitivité du prix (1–5)", "Procurement (self-approve)": "Passation (auto-approbation)", "Procurement approval chain": "Circuit d’approbation de la passation", "Procurement Desk": "Bureau des Marchés", "Procurement method": "Méthode de passation", "Procurement Officer": "Agent de Passation", "Procurement register": "Registre de passation", "Procurement: clauses & quotes": "Passation : clauses & devis", "Procurement": "Passation des Marchés", "Professional conduct (1–5)": "Conduite professionnelle (1–5)", "Projects": "Projets", "Purchase Requisitions": "Réquisitions d’achat", "Push data to cloud": "Pousser les données vers le cloud", "Qty": "Qté", "Quality of goods/services (1–5)": "Qualité des biens/services (1–5)", "Quantity to issue": "Quantité à sortir", "Queue clear": "File vide", "Quotations": "Devis", "quotes / pro-forma invoices": "devis / factures pro-forma", "Range:": "Fourchette :", "Rating": "Note", "Receipts posted": "Réceptions enregistrées", "Receivables open": "Créances ouvertes", "Receiving — Goods Receipt Notes": "Réception — Bons de Réception", "Receiving (GRN)": "Réception (BR)", "Receiving Officer": "Agent de réception", "Recent stock movements": "Mouvements de stock récents", "Recently received": "Reçu récemment", "Records will appear in this list once created.": "Les enregistrements apparaîtront dans cette liste une fois créés.", "Recruitment": "Recrutement", "Regulatory / decision support": "Appui réglementaire / décisionnel", "Rejected / returned requisitions": "Réquisitions rejetées / retournées", "Remove line": "Retirer la ligne", "Remove": "Retirer", "Reorder at": "Seuil de réappro.", "Reorder": "Réappro.", "Reports Centre": "Centre de rapports", "Reports": "Rapports", "Requesting section / department": "Section / service demandeur", "Require requester to attach quotes before submitting": "Exiger que le demandeur joigne des devis avant l’envoi", "Required approvers": "Approbateurs requis", "Requisition prepared": "Réquisition préparée", "Requisition title": "Intitulé de la réquisition", "Requisitioner": "Demandeur", "Requisitions (all statuses)": "Réquisitions (tous statuts)", "Requisitions with complete attachments": "Réquisitions avec pièces jointes complètes", "Requisitions": "Réquisitions", "Reset password": "Réinitialiser le mot de passe", "Reset pw": "Réinit. mdp", "Responsibility (role)": "Responsabilité (rôle)", "Responsibility": "Responsabilité", "Run payroll to compute gross pay from active employee records.": "Exécutez la paie pour calculer le salaire brut à partir des employés actifs.", "Sales / CRM": "Ventes / CRM", "Sales & CRM": "Ventes & CRM", "Sales Orders & Invoices": "Commandes & factures", "Sample tenant": "Locataire d’exemple", "Save account": "Enregistrer le compte", "Save as draft": "Enregistrer comme brouillon", "Save evaluation": "Enregistrer l’évaluation", "Save organization": "Enregistrer l’organisation", "Save pack": "Enregistrer le dossier", "Save profile": "Enregistrer le profil", "Save sections": "Enregistrer les sections", "Save workflow settings": "Enregistrer la configuration du circuit", "Save": "Enregistrer", "Search records…  (Enter)": "Rechercher…  (Entrée)", "Search title / number…": "Rechercher intitulé / numéro…", "Section / department name": "Nom de la section / service", "Section / department": "Section / service", "Section Head review": "Examen du Chef de Service", "Section Head": "Chef de Service", "Sections & Routing": "Sections & Routage", "Sections": "Sections", "Section": "Section", "Select or type a new section": "Choisir ou saisir une nouvelle section", "Send to approver →": "Envoyer à l’approbateur →", "Short name / acronym": "Nom court / acronyme", "Short name": "Nom court", "Sign in securely": "Se connecter", "Sign in": "Connexion", "Sign out": "Déconnexion", "Signed instruments awaiting delivery will appear here.": "Les instruments signés en attente de livraison apparaîtront ici.", "Spend by supplier": "Dépenses par fournisseur", "Spent to date (FCFA)": "Dépensé à ce jour (FCFA)", "Spent": "Dépensé", "Status": "Statut", "Stock & Items": "Articles & stock", "Submit for approval": "Soumettre pour approbation", "Suggested budget line": "Ligne budgétaire suggérée", "Super Administrator": "Super Administrateur", "Supplier Management": "Gestion des fournisseurs", "Supplier name": "Nom du fournisseur", "Suppliers pre-qualified": "Fournisseurs pré-qualifiés", "Suppliers": "Fournisseurs", "Supplier": "Fournisseur", "Supply Chain Management": "Gestion de la chaîne logistique", "Supply Chain": "Chaîne logistique", "Suspend": "Suspendre", "Switch language / Changer de langue": "Changer de langue / Switch language", "Tax ID / NIF": "NIF / Identifiant fiscal", "Threshold range": "Fourchette de seuil", "Total stock value (FCFA) — weighted cost": "Valeur totale du stock (FCFA) — coût pondéré", "Training": "Formation", "Trial balance": "Balance générale", "Unit cost": "Coût unitaire", "Unit est. cost": "Coût unitaire est.", "Unit": "Unité", "User accounts": "Comptes utilisateurs", "User Accounts": "Comptes utilisateurs", "Username": "Nom d’utilisateur", "Users": "Utilisateurs", "User": "Utilisateur", "Valuation": "Valorisation", "Value": "Valeur", "Variable": "Variable", "Vendor Approvals": "Validation des fournisseurs", "Vendor Evaluation": "Évaluation des fournisseurs", "Vendor master": "Fiche fournisseurs", "Vendor": "Fournisseur", "Version 1.0 · Enterprise Suite": "Version 1.0 · Suite Entreprise", "Viewer / Auditor": "Observateur / Auditeur", "Viewer": "Observateur", "Volume by procurement method": "Volume par méthode de passation", "Warehouse / Store": "Magasin / Stock", "Warehouse": "Magasin", "When": "Quand", "Who approves new vendors": "Qui approuve les nouveaux fournisseurs", "Workflow Configuration": "Configuration du circuit", "Workflow Config": "Configuration du circuit", "Year": "Année", "Yes — enforced (recommended)": "Oui — imposé (recommandé)", "Yes — enforced": "Oui — imposé", "Yes": "Oui", "Accounts are created centrally here and issued to staff — users can never self-register. Assign each account the responsibility that matches its role in the procurement chain and other modules.": "Les comptes sont créés de façon centralisée ici et attribués au personnel — les utilisateurs ne peuvent jamais s’auto-inscrire. Attribuez à chaque compte la responsabilité correspondant à son rôle dans le circuit de passation et les autres modules.", "Accounts are issued centrally by your administrator. Self-registration is not available.": "Les comptes sont créés de façon centralisée par votre administrateur. L’auto-inscription n’est pas disponible.", "All accounts, roles and last login.": "Tous les comptes, rôles et dernière connexion.", "All generated instruments (BC / LC / Contrat) and their amounts.": "Tous les instruments générés (BC / LC / Contrat) et leurs montants.", "All requisitions with status, method, supplier and amount.": "Toutes les réquisitions avec statut, méthode, fournisseur et montant.", "All vendors with code, category, status and rating.": "Tous les fournisseurs avec code, catégorie, statut et note.", "Allocated vs committed vs spent per budget line.": "Alloué vs engagé vs dépensé par ligne budgétaire.", "Any context the approver should know…": "Tout élément utile à l’approbateur…", "Approved files ready for instrument generation will appear here.": "Les dossiers approuvés prêts pour la génération d’instrument apparaîtront ici.", "Approved requisitions to process: select the procurement method (clause pack), record the retained supplier, attach quotes / PV — the system blocks forwarding to Finance without attachments.": "Réquisitions approuvées à traiter : choisissez la méthode de passation (dossier de clauses), enregistrez le fournisseur retenu, joignez les devis / PV — le système bloque la transmission à la Finance sans pièces jointes.", "Approver / Section Head": "Approbateur / Chef de Service", "Approvers:": "Approbateurs :", "Average approval chain steps completed": "Étapes moyennes du circuit d’approbation réalisées", "Avg. cycle time (days) — submission → signature": "Délai moyen (jours) — soumission → signature", "Bars show % of allocation committed + spent per line.": "Les barres montrent le % d’allocation engagé + dépensé par ligne.", "Block “Send to Finance” without procurement attachments": "Bloquer « Envoyer à la Finance » sans pièces jointes de passation", "Capture forecast needs per period — feed them into the annual procurement plan (PPM).": "Saisissez les besoins prévisionnels par période — intégrez-les au plan annuel de passation (PPM).", "Clause packs encode your country code and procurement manual. Procurement selects a pack per file; its clauses are embedded verbatim in the generated PO/Contract. INSAPT ships with packs aligned to the Code des Marchés Publics du Tchad and the INSAPT Manual (incl. CPA channel).": "Les dossiers de clauses encodent votre code national et votre manuel de passation. La Passation choisit un dossier par affaire ; ses clauses sont insérées telles quelles dans le BC/Contrat généré. INSAPT est livré avec des dossiers alignés sur le Code des Marchés Publics du Tchad et le Manuel INSAPT (y compris le canal CPA).", "Clauses — one per block: “Title :: text”, separated by a blank line": "Clauses — une par bloc : « Titre :: texte », séparées par une ligne vide", "Click “＋ New requisition” to raise your first request and attach your quotes.": "Cliquez sur « ＋ Nouvelle réquisition » pour créer votre première demande et joindre vos devis.", "Commitments post automatically when Finance confirms funding on a requisition (Chapitre 11.1); the committed amount moves to": "Les engagements sont enregistrés automatiquement lorsque la Finance confirme le financement d’une réquisition (Chapitre 11.1) ; le montant engagé passe en", "Create a fully-populated demo organization to showcase multi-tenant isolation and onboarding.": "Créez une organisation démo entièrement peuplée pour illustrer l’isolation multi-locataire et l’intégration.", "Define your organization's sections/departments and map each to its approver (Chef de Service). When a requisitioner picks their section, the file": "Définissez les sections/services de votre organisation et associez chacun à son approbateur (Chef de Service). Lorsqu’un demandeur choisit sa section, le dossier", "Describe the need, attach your supporting": "Décrivez le besoin, joignez vos pièces", ", add comments, then send to your Chef de Service (Section Head) for approval.": "… ajoutez des commentaires, puis envoyez à votre Chef de Service pour approbation.", "Enable or disable modules per organization. Procurement, Administration and Intelligence-core stay available; toggles below control which module groups appear in each tenant's navigation.": "Activez ou désactivez les modules par organisation. Passation, Administration et le cœur Intelligence restent disponibles ; les commutateurs ci-dessous contrôlent quels groupes de modules apparaissent dans la navigation de chaque locataire.", "Entries post automatically on goods receipt; you can also add manual entries.": "Les écritures sont enregistrées automatiquement à la réception ; vous pouvez aussi ajouter des écritures manuelles.", "Every sensitive action (logins, approvals, funding, instrument generation, receipts, admin changes) is written to a tamper-evident trail. Showing the latest 300 events.": "Chaque action sensible (connexions, approbations, financements, génération d’instruments, réceptions, modifications admin) est inscrite dans une piste infalsifiable. Affichage des 300 derniers événements.", "Funded files awaiting the Directeur Général (DG)'s decision. Approval authorizes Procurement to generate the PO / Contract instrument.": "Dossiers financés en attente de la décision du Directeur Général (DG). L’approbation autorise la Passation à générer l’instrument BC / Contrat.", "Generate printable, signed-off registers and export any of them to CSV. As Super Admin these span all organizations.": "Générez des registres imprimables et validés, et exportez-les en CSV. En tant que Super Admin, ils couvrent toutes les organisations.", "Generate printable, signed-off registers and export any of them to CSV. These cover your organization.": "Générez des registres imprimables et validés, et exportez-les en CSV. Ils couvrent votre organisation.", "Generate the instrument for fully-approved files, print it, obtain the physical signature of the Directeur Général (DG), then mark it signed to open the receiving record.": "Générez l’instrument pour les dossiers entièrement approuvés, imprimez-le, obtenez la signature physique du Directeur Général (DG), puis marquez-le signé pour ouvrir la fiche de réception.", "Generated POs and contracts will be registered here (Chapitre 9 — Gestion des Contrats).": "Les BC et contrats générés seront enregistrés ici (Chapitre 9 — Gestion des Contrats).", "Method suggestions follow the configured thresholds (INSAPT: Art. 9–13, Décret N°002130/PR/2020; Décret N°2499/PR/2020). Files processed under": "Les suggestions de méthode suivent les seuils configurés (INSAPT : Art. 9–13, Décret N°002130/PR/2020 ; Décret N°2499/PR/2020). Les dossiers traités sous", "Multi-organization ERP built around a rigorous, configurable procurement chain — from requisition and quotes, through clause application and funding, to signed instruments, receipt and reporting.": "ERP multi-organisation bâti autour d’un circuit de passation rigoureux et configurable — de la réquisition et des devis, à l’application des clauses et au financement, jusqu’aux instruments signés, à la réception et au reporting.", "New vendors are submitted for approval before they can be used in procurement. Once approved they receive a confirmed vendor code and appear on the active vendor list.": "Les nouveaux fournisseurs sont soumis à approbation avant de pouvoir être utilisés en passation. Une fois approuvés, ils reçoivent un code confirmé et apparaissent sur la liste des fournisseurs actifs.", "New vendors submitted by Procurement require approval here (as configured in Workflow Config — default: Final Authority (DG)). Approving activates the vendor and confirms its code so Procurement can transact with it.": "Les nouveaux fournisseurs soumis par la Passation requièrent une approbation ici (selon la Configuration du circuit — défaut : Autorité finale (DG)). L’approbation active le fournisseur et confirme son code afin que la Passation puisse traiter avec lui.", "or CPA derogation should be reconciled with the Registre des Dérogations (Annexe N).": "ou la dérogation CPA doivent être rapprochés du Registre des Dérogations (Annexe N).", "Passwords are hashed (SHA-256) and never stored in clear text. Sessions expire after 60 minutes of inactivity. Forgot your password? Contact your organization administrator.": "Les mots de passe sont hachés (SHA-256) et jamais stockés en clair. Les sessions expirent après 60 minutes d’inactivité. Mot de passe oublié ? Contactez l’administrateur de votre organisation.", "PDF, images or documents · max 2 MB per file. Files are stored securely inside the record.": "PDF, images ou documents · max 2 Mo par fichier. Les fichiers sont stockés de façon sécurisée dans l’enregistrement.", "plays each role, the labels, and the mandatory controls.": "joue chaque rôle, les libellés et les contrôles obligatoires.", "Requisitions from your section awaiting your decision. Approving forwards them to the Procurement team; rejecting returns them to the requester with your comment.": "Réquisitions de votre section en attente de votre décision. L’approbation les transmet à la Passation ; le rejet les retourne au demandeur avec votre commentaire.", "Score 1–5 on each criterion (Chapitre 10 — Performance des Fournisseurs). The overall rating updates the vendor master and its classification.": "Notez de 1 à 5 chaque critère (Chapitre 10 — Performance des Fournisseurs). La note globale met à jour la fiche fournisseur et sa classification.", "Send to approver (Chef de Service (Section Head))": "Envoyer à l’approbateur (Chef de Service)", "Supplier invoices. Entries are created automatically when a PO/Contract instrument is generated; mark them paid once settled.": "Factures fournisseurs. Les écritures sont créées automatiquement lorsqu’un instrument BC/Contrat est généré ; marquez-les payées une fois réglées.", "The chain is fixed in sequence — Requisitioner → Approver → Procurement → Finance → Final Authority → Instrument → Signature → Receipt — but each organization configures": "Le circuit est fixe — Demandeur → Approbateur → Passation → Finance → Autorité finale → Instrument → Signature → Réception — mais chaque organisation configure", "The password is hashed immediately (SHA-256) — it cannot be read back later, only reset.": "Le mot de passe est haché immédiatement (SHA-256) — il ne peut pas être relu ensuite, seulement réinitialisé.", "to the right approver.": "vers le bon approbateur.", "Why is this acquisition necessary? Link to work plan / PPM where possible.": "Pourquoi cette acquisition est-elle nécessaire ? Reliez au plan de travail / PPM si possible.", "Work orders & shop floor": "Ordres de travail & atelier", "who": "qui", "As Super Administrator you create organizational tenants and their first Organization Admin. Each organization's data is isolated; org admins then customize users, clause packs and workflow.": "En tant que Super Administrateur, vous créez des locataires organisationnels et leur premier Admin d’organisation. Les données de chaque organisation sont isolées ; les admins d’organisation personnalisent ensuite les utilisateurs, les dossiers de clauses et le circuit.", "configured": "configurée", ". Data pushes automatically a few seconds after each change and pulls on load.": ". Les données sont poussées automatiquement quelques secondes après chaque changement et récupérées au chargement."});
+
+function _frTranslateNode(nd){
+  var v=nd.nodeValue; if(!v||!/[A-Za-z]/.test(v))return;
+  var k=v.trim(); if(!k)return; var f=L[k];
+  if(f&&f!==k) nd.nodeValue=v.replace(k,f);
+}
+function translateDOM(root){
+  if(!root||Session.lang!=='fr')return;
+  try{
+    if(root.nodeType===3){ _frTranslateNode(root); return; }
+    var tw=document.createTreeWalker(root,NodeFilter.SHOW_TEXT,null),n,list=[];
+    while(n=tw.nextNode())list.push(n);
+    list.forEach(_frTranslateNode);
+    if(root.querySelectorAll){
+      root.querySelectorAll('[placeholder]').forEach(function(e){var k=(e.getAttribute('placeholder')||'').trim();if(L[k])e.setAttribute('placeholder',L[k]);});
+      root.querySelectorAll('[title]').forEach(function(e){var k=(e.getAttribute('title')||'').trim();if(L[k])e.setAttribute('title',L[k]);});
+    }
+    if(root.nodeType===1&&root.getAttribute){
+      var pk=(root.getAttribute('placeholder')||'').trim(); if(pk&&L[pk])root.setAttribute('placeholder',L[pk]);
+      var tk=(root.getAttribute('title')||'').trim(); if(tk&&L[tk])root.setAttribute('title',L[tk]);
+    }
+  }catch(e){}
+}
+var _i18nObs=null;
+function startI18nObserver(){
+  if(_i18nObs||!document.body)return;
+  _i18nObs=new MutationObserver(function(muts){
+    if(Session.lang!=='fr')return;
+    for(var i=0;i<muts.length;i++){var an=muts[i].addedNodes;for(var j=0;j<an.length;j++){var nd=an[j];if(nd.nodeType===1)translateDOM(nd);else if(nd.nodeType===3)_frTranslateNode(nd);}}
+  });
+  _i18nObs.observe(document.body,{childList:true,subtree:true});
+}
+/* re-translate everything on demand (used on language toggle) */
+function retranslateAll(){ if(Session.lang==='fr')translateDOM(document.body); }
+/* override toggleLang to also sweep the current DOM */
+function toggleLang(){
+  Session.lang=Session.lang==='fr'?'en':'fr';
+  if(Session.user){ Session.user.lang=Session.lang; save(); }
+  applyChrome(); buildNav(); if(currentView)nav(currentView);
+  retranslateAll();
+}
+
 /* =====================================================================
    INIT
 ===================================================================== */
@@ -1976,6 +2290,8 @@ gsearch:`<p>Use the top search box to find any requisition, supplier, item, empl
   }
   DB=local||await seedDB();
   if(!local)Store.save(DB);
+  await migrate();
+  if(window.startI18nObserver)startI18nObserver();
   $('liPass').addEventListener('keydown',e=>{if(e.key==='Enter')doLogin();});
 })();
 </script>
