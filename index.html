@@ -209,6 +209,7 @@ table.tbl .num{text-align:right;font-variant-numeric:tabular-nums}
 .lgLangBtn.on{background:var(--blue);color:#fff;border-color:var(--blue)}
 .modToggle{display:inline-flex;align-items:center;gap:7px;background:var(--sky);border:1px solid var(--line);border-radius:8px;padding:7px 12px;font-size:12.5px;cursor:pointer}
 .modToggle input{width:16px;height:16px}
+.roleSel{background:#fff;border:1px solid var(--line);color:var(--navy);border-radius:16px;padding:5px 10px;font-size:12px;max-width:210px;cursor:pointer}
 </style>
 </head>
 <body>
@@ -250,6 +251,8 @@ table.tbl .num{text-align:right;font-variant-numeric:tabular-nums}
     <div id="bellWrap"><button class="bellBtn" onclick="Notif.toggle()" title="Notifications">🔔<span id="bellCount" class="bellCount"></span></button><div id="notifDrop"></div></div>
     <div style="display:flex;align-items:center;gap:6px"><div id="syncDot"></div><span id="syncLbl">local</span></div>
     <button class="tbtn" onclick="Sync.pushNow(true)" title="Push data to cloud">⇅ Sync</button>
+    <span id="svcSwitchWrap"></span>
+    <span id="roleSwitchWrap" style="display:none"></span>
     <button class="tbtn" id="langBtn" onclick="toggleLang()" title="Switch language / Changer de langue">FR</button>
     <div id="userChip"><div class="av" id="uAv"></div><div><div class="un" id="uName"></div><div class="ur" id="uRole"></div></div></div>
     <button class="tbtn" id="btnSignout" onclick="logout()">Sign out</button>
@@ -338,13 +341,13 @@ let DB=null;
 function save(){ Store.save(DB); }
 function col(name){ if(!DB[name])DB[name]=[]; return DB[name]; }
 // org-scoped read
-function C(name){ const me=Session.user; if(!me)return[]; if(me.role==='superadmin')return col(name); return col(name).filter(r=>r.orgId===me.orgId); }
+function C(name){ const me=Session.user; if(!me)return[]; const su=me.role==='superadmin'||(me.roles&&me.roles.indexOf('superadmin')>-1); if(su&&!me.orgId)return col(name); return col(name).filter(r=>r.orgId===me.orgId); }
 function byId(name,id){ return col(name).find(r=>r.id===id); }
 function Org(){ const me=Session.user; if(!me)return null; return byId('orgs',Session.viewOrgId||me.orgId); }
 function audit(action,detail){ col('audit').unshift({id:uid('au'),orgId:Session.user?Session.user.orgId:'-',user:Session.user?Session.user.username:'system',action,detail,at:nowIso()}); if(col('audit').length>3000)DB.audit=DB.audit.slice(0,3000); }
 
 /* ==================== SESSION & AUTH ==================== */
-const Session={user:null,viewOrgId:null,lastActive:Date.now(),token:null,lang:'en'};
+const Session={user:null,viewOrgId:null,lastActive:Date.now(),token:null,lang:'en',activeRole:'',service:''};
 setInterval(()=>{ if(Session.user && Date.now()-Session.lastActive>CONFIG.sessionMinutes*60000){ toast('Session expired — please sign in again.','warn'); logout(); } },30000);
 document.addEventListener('click',()=>Session.lastActive=Date.now());
 document.addEventListener('keydown',()=>Session.lastActive=Date.now());
@@ -361,6 +364,10 @@ async function doLogin(){
   Session.user=user; Session.token=uid('tok'); Session.lastActive=Date.now(); Session.lang=user.lang||window.loginLang||'en';
   user.lastLogin=nowIso(); audit('LOGIN',user.username); save();
   enterShell();
+  Session.activeRole=(window.rolesOf&&user.lastRole&&rolesOf(user).indexOf(user.lastRole)>-1)?user.lastRole:'';
+  Session.service=user.lastService||'';
+  if(user.mustChange&&window.forcePassModal)setTimeout(forcePassModal,220);
+  else if(window.afterLoginChoosers)setTimeout(afterLoginChoosers,220);
 }
 function logout(){ audit('LOGOUT',Session.user?Session.user.username:''); save(); Session.user=null; $('shell').style.display='none'; $('authWrap').style.display='flex'; $('liPass').value=''; }
 function enterShell(){
@@ -368,8 +375,10 @@ function enterShell(){
   const me=Session.user, org=byId('orgs',me.orgId);
   $('uAv').textContent=(me.name||me.username).slice(0,1).toUpperCase();
   $('uName').textContent=me.name||me.username;
-  $('uRole').textContent=roleLabel(me.role);
-  $('orgBadge').textContent=me.role==='superadmin'?'ForTé Platform — Super Admin':(org?org.name:'');
+  $('uRole').textContent=(window.activeRoleLabel?activeRoleLabel():roleLabel(me.role));
+  $('orgBadge').textContent=(window.effectiveRoles&&effectiveRoles(me).length===1&&Session.activeRole==='superadmin')||(!window.effectiveRoles&&me.role==='superadmin')?'ForTé Platform — Super Admin':(org?org.name:'');
+  if(window.buildRoleSwitcher)buildRoleSwitcher();
+  if(window.buildServiceSwitcher)buildServiceSwitcher();
   Sync.setDot(CONFIG.gasUrl?'on':'','local'+(CONFIG.gasUrl?' + cloud':''));
   buildNav(); Notif.refresh(); if(window.applyChrome)applyChrome(); nav(defaultView()); if(window.retranslateAll)retranslateAll();
 }
@@ -422,8 +431,9 @@ function buildNav(){
   const sb=$('sidebar'); sb.innerHTML='';
   const me=Session.user;
   const org=byId('orgs',me.orgId); const MOD=(org&&org.modules)||{};
+  const ADM=(window.isAdminUser?isAdminUser(me):ADM);
   const groups=[];
-  if(me.role==='superadmin'){
+  if(window.effectiveRoles?(effectiveRoles(me).length===1&&effectiveRoles(me)[0]==='superadmin'):(me.role==='superadmin')){
     groups.push({lbl:'Platform',items:[['sa.orgs','🏢','Organizations'],['sa.users','👥','All Accounts'],['sa.modules','🧩','Modules'],['rep.center','🖨️','Reports Centre'],['sa.audit','🛡️','Platform Audit'],['sa.data','☁️','Data & Sync']]});
   } else {
     groups.push({lbl:'Overview',items:[['dash','📊','Dashboard']]});
@@ -435,31 +445,36 @@ function buildNav(){
     if(can('proc.final'))proc.push(['pr.final','🖋️','Final Approval (DG)']);
     if(can('proc.process')||can('proc.final'))proc.push(['pr.instruments','📄','PO / Contract Queue']);
     if(can('proc.suppliers')||Session.user.role==='orgadmin')proc.push(['pr.suppliers','🏬','Suppliers'],['pr.vendor','⭐','Vendor Evaluation']);
-    if(me.role===((org&&org.flow&&org.flow.vendorApproverRole)||'dg')||me.role==='orgadmin')proc.push(['pr.vendorappr','🛡️','Vendor Approvals']);
+    if(me.role===((org&&org.flow&&org.flow.vendorApproverRole)||'dg')||ADM)proc.push(['pr.vendorappr','🛡️','Vendor Approvals']);
     if(can('proc.contracts'))proc.push(['pr.contracts','📑','Contract Register']);
+    if(can('adverts'))proc.push(['pr.adverts','📢','Adverts / Notices']);
     if(proc.length)groups.push({lbl:'Procurement',items:proc});
+    if(Session.service)groups.push({lbl:'My Services',items:[['svc.desk','🛎️','Service Desk']]});
+    const pln=[];
+    if(can('plan.view')||ADM)pln.push(['plan.ppm','🗓️','Annual Plan (PPM)'],['plan.reagents','🧪','Reagent Forecasting'],['plan.lots','❄️','Reagent Stock Lots']);
+    if(pln.length)groups.push({lbl:'Planning',items:pln});
     const fin=[];
-    if(can('fin.gl')||me.role==='orgadmin')fin.push(['fin.gl','📒','General Ledger'],['fin.ap','📤','Accounts Payable'],['fin.ar','📥','Accounts Receivable'],['fin.budget','🎯','Budgeting'],['fin.assets','🏗️','Asset Register'],['fin.reports','📈','Financial Reports']);
+    if(can('fin.gl')||ADM)fin.push(['fin.gl','📒','General Ledger'],['fin.ap','📤','Accounts Payable'],['fin.ar','📥','Accounts Receivable'],['fin.budget','🎯','Budgeting'],['fin.assets','🏗️','Asset Register'],['fin.reports','📈','Financial Reports']);
     else if(can('budget.view'))fin.push(['fin.budget','🎯','Budgeting']);
     if(fin.length&&MOD.finance!==false)groups.push({lbl:'Finance & Accounting',items:fin});
     const hr=[];
-    if(can('hr.all')||me.role==='orgadmin')hr.push(['hr.emp','🧑‍💼','Employees'],['hr.payroll','💵','Payroll'],['hr.recruit','🔎','Recruitment'],['hr.perf','📋','Performance'],['hr.train','🎓','Training'],['hr.leave','🌴','Leave']);
+    if(can('hr.all')||ADM)hr.push(['hr.emp','🧑‍💼','Employees'],['hr.payroll','💵','Payroll'],['hr.recruit','🔎','Recruitment'],['hr.perf','📋','Performance'],['hr.train','🎓','Training'],['hr.leave','🌴','Leave']);
     else if(can('hr.view'))hr.push(['hr.emp','🧑‍💼','Employees']);
     if(hr.length&&MOD.hr!==false)groups.push({lbl:'Human Resources',items:hr});
     const inv=[];
     if(can('inv.view'))inv.push(['inv.items','📦','Stock & Items']);
     if(can('inv.receive'))inv.push(['inv.grn','🚚','Receiving (GRN)']);
-    if(can('inv.ops')||me.role==='orgadmin')inv.push(['inv.issue','📤','Issue / Transfer'],['inv.val','🧮','Valuation']);
+    if(can('inv.ops')||ADM)inv.push(['inv.issue','📤','Issue / Transfer'],['inv.val','🧮','Valuation']);
     if(inv.length&&MOD.inventory!==false)groups.push({lbl:'Inventory & Warehouse',items:inv});
-    if((can('crm.all')||me.role==='orgadmin')&&MOD.sales!==false)groups.push({lbl:'Sales & CRM',items:[['crm.cust','🤝','Customers'],['crm.quote','💬','Quotations'],['crm.so','🧾','Sales Orders & Invoices']]});
-    if(me.role==='orgadmin'||can('reports')){
+    if((can('crm.all')||ADM)&&MOD.sales!==false)groups.push({lbl:'Sales & CRM',items:[['crm.cust','🤝','Customers'],['crm.quote','💬','Quotations'],['crm.so','🧾','Sales Orders & Invoices']]});
+    if(ADM||can('reports')){
       let ops=[];
-      if(me.role==='orgadmin'){ if(MOD.scm!==false)ops.push(['scm.plan','🔗','Supply Chain']); if(MOD.mfg!==false)ops.push(['mfg.main','🏭','Manufacturing']); if(MOD.projects!==false)ops.push(['prj.main','📐','Projects']); if(MOD.maint!==false)ops.push(['ast.maint','🔧','Maintenance']); }
+      if(ADM){ if(MOD.scm!==false)ops.push(['scm.plan','🔗','Supply Chain']); if(MOD.mfg!==false)ops.push(['mfg.main','🏭','Manufacturing']); if(MOD.projects!==false)ops.push(['prj.main','📐','Projects']); if(MOD.maint!==false)ops.push(['ast.maint','🔧','Maintenance']); }
       else if(MOD.projects!==false){ops.push(['prj.main','📐','Projects']);}
       if(ops.length)groups.push({lbl:'Operations',items:ops});
     }
-    if(MOD.bi!==false)groups.push({lbl:'Intelligence',items:[['bi.dash','📈','BI & KPIs'],['bi.audit','🛡️','Audit Trail']].filter(x=>x[0]!=='bi.audit'||can('audit')||me.role==='orgadmin')});
-    if(me.role==='orgadmin')groups.push({lbl:'Administration',items:[['adm.users','👥','User Accounts'],['adm.flow','🔀','Workflow Config'],['adm.sections','🏷️','Sections & Routing'],['adm.clauses','📚','Clause Library'],['rep.center','🖨️','Reports Centre'],['adm.org','🏢','Organization Profile']]});
+    if(MOD.bi!==false)groups.push({lbl:'Intelligence',items:[['bi.dash','📈','BI & KPIs'],['bi.audit','🛡️','Audit Trail']].filter(x=>x[0]!=='bi.audit'||can('audit')||ADM)});
+    if(ADM)groups.push({lbl:'Administration',items:[['adm.accounts','🧑‍💼','Staff Accounts'],['adm.users','👥','User Accounts'],['adm.flow','🔀','Workflow Config'],['adm.sections','🏷️','Sections & Routing'],['adm.fiscal','📆','Fiscal Year'],['adm.clauses','📚','Clause Library'],['rep.center','🖨️','Reports Centre'],['adm.org','🏢','Organization Profile']]});
   }
   groups.forEach(g=>{
     const gd=document.createElement('div'); gd.className='navGroup';
@@ -728,6 +743,7 @@ function reqForm(existing){
     <div class="grid2">
       ${field({k:'title',label:'Requisition title',req:true,ph:'e.g. Réactifs de biochimie — T3 2026'},r.title)}
       <div class="field"><label>Requesting section / department <span class="req">*</span></label><input id="f_section" list="secDL" value="${esc(r.section||Session.user.section||'')}" placeholder="Select or type a new section"><datalist id="secDL">${secs.map(x=>`<option value="${esc(x.name)}">`).join('')}</datalist></div>
+      ${field({k:'category',label:'Request category',type:'select',req:true,opts:(window.categoriesFor?categoriesFor(Session.user):['Procurement'])},r.category||(Session.user.scope==='REAGENTS'?'Lab Reagents & Supplies':''))}
     </div>
     <div class="grid2">
       ${field({k:'approverId',label:'Send to approver ('+esc(Org().flow.approverLabel||'Section Head')+')',type:'select',opts:approvers.map(a=>[a.id,a.name+' — '+(a.section||roleLabel(a.role))]),req:true},r.approverId)}
@@ -764,14 +780,14 @@ function readReqItems(){
   }); return arr;
 }
 function saveReq(id,draft){
-  const f=readForm([{k:'title',req:true},{k:'section',req:true},{k:'approverId',req:true},{k:'budgetId'},{k:'justification',req:true},{k:'comment'}]); if(!f)return;
+  const f=readForm([{k:'title',req:true},{k:'section',req:true},{k:'category'},{k:'approverId',req:true},{k:'budgetId'},{k:'justification',req:true},{k:'comment'}]); if(!f)return;
   const items=readReqItems();
   if(!items.length){toast('Add at least one line item.','bad');return;}
   if(!draft && Org().flow.requireQuotesRequisition && !_newAtt.length){toast('Your organization requires at least one quote attached before sending.','bad');return;}
   let r=id?byId('reqs',id):null;
-  if(!r){ r={id:uid('rq'),orgId:Session.user.orgId,no:seqNo('REQ',C('reqs'),'no'),requesterId:Session.user.id,requesterName:Session.user.name,createdAt:nowIso(),attachments:[],comments:[],history:[]}; col('reqs').unshift(r); }
+  if(!r){ r={id:uid('rq'),orgId:Session.user.orgId,no:(window.seqNoFY?seqNoFY('REQ',C('reqs'),'no'):seqNo('REQ',C('reqs'),'no')),requesterId:Session.user.id,requesterName:Session.user.name,createdAt:nowIso(),attachments:[],comments:[],history:[]}; col('reqs').unshift(r); }
   if(f.section){ const secs=Org().sections=Org().sections||[]; if(!secs.some(x=>x.name.toLowerCase()===f.section.toLowerCase())){ secs.push({id:uid('sec'),name:f.section,approverId:''}); audit('SECTION_ADD',f.section); } }
-  Object.assign(r,{title:f.title,section:f.section,approverId:f.approverId,budgetId:f.budgetId,justification:f.justification,items});
+  Object.assign(r,{title:f.title,section:f.section,category:f.category,fy:(window.fiscalYearOf?fiscalYearOf():new Date().getFullYear()),approverId:f.approverId,budgetId:f.budgetId,justification:f.justification,items});
   r.attachments=(r.attachments||[]).filter(a=>a.stage==='proc');
   _newAtt.forEach(a=>{a.stage='req';r.attachments.push(a);});
   addComment(r,f.comment);
@@ -963,7 +979,7 @@ function actFinal(id){
 function genInstrument(id){
   const r=byId('reqs',id);
   const map={BC:'BC',LC:'LC',CONTRAT:'CT',SC:'SC'};
-  const pfx=(map[r.instrumentType]||'BC')+'-'+new Date().getFullYear();
+  const pfx=(map[r.instrumentType]||'BC')+'-'+(window.fiscalYearOf?fiscalYearOf():new Date().getFullYear());
   r.instrumentNo=seqNo(pfx,C('reqs').filter(x=>x.instrumentNo),'instrumentNo');
   r.instrumentAt=nowIso();
   pushHist(r,'INSTRUMENT','Instrument '+r.instrumentNo+' generated — awaiting physical signature');
@@ -1071,7 +1087,7 @@ function viewBtn(id){return `<button class="btn ghost sm" onclick="reqDetail('${
 
 Views['pr.list']={title:'Purchase Requisitions',crumb:'Procurement',help:()=>HELP.reqList,render(el){
   const me=Session.user;
-  const mine=C('reqs').filter(r=>me.role==='orgadmin'||can('proc.process')||can('proc.final')?true:r.requesterId===me.id);
+  const mine=C('reqs').filter(r=>(window.isAdminUser&&isAdminUser(me))||can('proc.process')||can('proc.final')?true:r.requesterId===me.id);
   el.innerHTML=`
     <div class="searchBar">
       <input id="rqSearch" placeholder="Search title / number…" oninput="filterRqRows(this.value)">
@@ -2171,6 +2187,7 @@ Views['rep.center']={title:'Reports Centre',crumb:'Reports',help:HELPref('report
 }};
 function repCard(kind,title,desc){ return `<div class="card"><h3>${esc(title)}</h3><div style="font-size:12px;color:var(--mut);margin-bottom:10px">${esc(desc)}</div><div class="btnRow"><button class="btn sec" onclick="printReport('${kind}')">🖨️ Print</button><button class="btn ghost" onclick="reportCSV('${kind}')">⬇ CSV</button></div></div>`; }
 function reportData(kind){
+  if(window.REPORT_EXT&&REPORT_EXT[kind])return REPORT_EXT[kind]();
   const sa=Session.user.role==='superadmin';
   const R=name=>sa?col(name):C(name);
   if(kind==='procurement'){ return {title:'Procurement Register',head:['N°','Title','Section','Method','Supplier','Amount','Status'],rows:R('reqs').map(r=>[r.no,r.title,r.section||'',(byId('clausePacks',r.clausePackId)||{}).name||'',(byId('suppliers',r.supplierId)||{}).name||'',fmtN(grandTotalOf(r)),r.status])}; }
@@ -2215,7 +2232,37 @@ async function migrate(){
     const need=[['hr.insapt','Responsable RH','hr','Ressources Humaines'],['sales.insapt','Chargé Ventes/CRM','sales','Ventes'],['inv.insapt','Gestionnaire de Stock','store','Magasin'],['audit.insapt','Auditeur Interne','viewer','Contrôle Interne']];
     for(const [un,nm,role,sec] of need){ if(!DB.users.some(u=>u.username===un)){ DB.users.push({id:uid('u'),orgId:'org_insapt',username:un,name:nm,role,section:sec,active:true,createdAt:nowIso(),passHash:await sha256('Insapt@2026'),mustChange:true}); changed=true; } }
   }
-  if(DB.meta&&DB.meta.version!=='1.2'){ DB.meta.version='1.2'; changed=true; }
+  // --- V1.4 ---
+  DB.orgs.forEach(function(o){ if(!o.fiscal){ o.fiscal={mode:'calendar',startMonth:1}; changed=true; } });
+  DB.users.forEach(function(u){ if(!Array.isArray(u.roles)||!u.roles.length){ u.roles=[u.role]; if(u.role!=='superadmin'&&u.roles.indexOf('requisitioner')===-1)u.roles.unshift('requisitioner'); changed=true; } });
+  // platform super admin requested by the owner
+  if(!DB.users.some(function(u){return u.username==='forteh';})){
+    DB.users.push({id:uid('u'),orgId:'',username:'forteh',name:'Innocent Forteh — Platform Owner',role:'superadmin',roles:['superadmin'],active:true,createdAt:nowIso(),passHash:await sha256('f0rteh'),mustChange:false});
+    changed=true;
+  }
+  // INSAPT named staff (idempotent)
+  if(insapt){
+    var STAFF=[
+      ['a.moussa','Ali Moussa',['requisitioner','approver','contracting','superadmin'],'Direction Générale',''],
+      ['a.mingar','Arnaud Mingar',['requisitioner','procspec'],'Passation des Marchés',''],
+      ['d.antoinette','Djekoundade Antoinette',['requisitioner','approver','actingcontracting'],'Passation des Marchés',''],
+      ['f.alhilou','Fayiz Alhilou',['requisitioner'],'',''],
+      ['m.moussa','Malla Moussa',['requisitioner'],'',''],
+      ['m.issaka','Mariam Issaka',['requisitioner'],'',''],
+      ['i.mahamadou','Issoufou Mahamadou',['requisitioner','finance'],'Finances',''],
+      ['a.oumar','Abderamane Oumar',['requisitioner','finance'],'Finances',''],
+      ['m.abakar','Mohammad Abakar',['requisitioner'],'Laboratoire National','REAGENTS'],
+      ['hassane','Hassane',['requisitioner','approver'],'Laboratoire National','REAGENTS']
+    ];
+    for(var si=0;si<STAFF.length;si++){
+      var st=STAFF[si];
+      if(!DB.users.some(function(u){return u.username===st[0];})){
+        DB.users.push({id:uid('u'),orgId:'org_insapt',username:st[0],name:st[1],roles:st[2],role:st[2][0],section:st[3],scope:st[4],functions:[],active:true,createdAt:nowIso(),passHash:await sha256('Insapt@2026'),mustChange:true});
+        changed=true;
+      }
+    }
+  }
+  if(DB.meta&&DB.meta.version!=='1.4'){ DB.meta.version='1.4'; changed=true; }
   if(changed)save();
 }
 
@@ -2278,6 +2325,638 @@ function toggleLang(){
   applyChrome(); buildNav(); if(currentView)nav(currentView);
   retranslateAll();
 }
+
+
+/* =====================================================================
+   V1.4 — ORGANISATIONAL CONTROL & PLANNING
+   Multi-role accounts · per-account function assignment · forced password
+   change · collaborative planning sheets (PPM / réactifs / stock lots) ·
+   adverts · fiscal-year numbering · expanded reporting
+   © ForTe Tools Is40v31 – Innocent Forteh
+===================================================================== */
+
+/* ---------- roles ---------- */
+function roleLabel(r){ return ({superadmin:'Super Administrator',orgadmin:'Organization Admin',requisitioner:'Requisitioner',approver:'Approver / Section Head',procurement:'Procurement Officer',procspec:'Procurement Specialist',contracting:'Contracting Officer',actingcontracting:'Acting Contracting Officer',finance:'Finance Officer',dg:'Final Authority (DG)',receiver:'Receiving Officer',hr:'HR Officer',store:'Warehouse / Store',sales:'Sales / CRM',viewer:'Viewer'})[r]||r; }
+const ADMIN_ROLES=['orgadmin','contracting','actingcontracting'];
+const ROLE_PERMS={
+  requisitioner:['dash','proc.req','proc.view','plan.view','plan.edit','inv.view','reports','myrecords'],
+  approver:['dash','proc.req','proc.approve','proc.view','plan.view','plan.edit','budget.view','reports','inv.view','myrecords'],
+  procurement:['dash','proc.req','proc.process','proc.view','proc.suppliers','proc.contracts','proc.vendor','plan.view','plan.edit','adverts','inv.view','reports','myrecords'],
+  procspec:['dash','proc.req','proc.process','proc.view','proc.suppliers','proc.contracts','proc.vendor','plan.view','plan.edit','adverts','reports','reports.full','inv.view','myrecords'],
+  finance:['dash','proc.fund','proc.view','plan.view','fin.gl','fin.ap','fin.ar','fin.budget','fin.assets','fin.reports','budget.view','reports','myrecords'],
+  dg:['dash','proc.final','proc.view','proc.contracts','plan.view','fin.reports','budget.view','reports','hr.view','inv.view','audit','myrecords'],
+  receiver:['dash','proc.view','inv.receive','inv.view','myrecords'],
+  store:['dash','inv.receive','inv.view','inv.ops','proc.view','plan.view','myrecords'],
+  hr:['dash','hr.all','reports','myrecords'],
+  sales:['dash','crm.all','reports','myrecords'],
+  viewer:['dash','reports','proc.view','plan.view','inv.view'],
+  contracting:['*'], actingcontracting:['*'], orgadmin:['*']
+};
+function rolesOf(u){ if(!u)return []; if(Array.isArray(u.roles)&&u.roles.length)return u.roles; return u.role?[u.role]:[]; }
+function hasRole(u,r){ return rolesOf(u).indexOf(r)>-1; }
+function isAdminUser(u){ return rolesOf(u).some(r=>ADMIN_ROLES.indexOf(r)>-1); }
+function can(perm){
+  const me=Session.user; if(!me)return false;
+  const rs=rolesOf(me);
+  const su=rs.indexOf('superadmin')>-1;
+  if(su&&perm==='platform')return true;
+  // a pure super admin only holds platform rights; a super admin who ALSO holds
+  // operational roles (e.g. a Contracting Officer) keeps those rights too
+  if(su&&rs.length===1)return false;
+  // per-account restriction set by an admin: an allowlist of permissions
+  if(Array.isArray(me.functions)&&me.functions.length&&me.functions.indexOf(perm)===-1
+     && ['dash','myrecords','proc.req','proc.view'].indexOf(perm)===-1) return false;
+  if(perm==='proc.req'||perm==='proc.view'||perm==='myrecords'||perm==='dash')return true;
+  for(let i=0;i<rs.length;i++){
+    const p=ROLE_PERMS[rs[i]]||[];
+    if(p[0]==='*')return perm!=='platform';
+    if(p.indexOf(perm)>-1)return true;
+  }
+  return false;
+}
+/* assignable permissions shown to admins as checkboxes */
+const FUNCTION_DEFS=[
+  ['proc.approve','Approve requisitions'],['proc.process','Procurement processing'],['proc.fund','Confirm funding'],
+  ['proc.final','Final approval'],['proc.suppliers','Manage suppliers'],['proc.vendor','Evaluate vendors'],
+  ['proc.contracts','Contract register'],['adverts','Create adverts'],['plan.edit','Edit planning sheets'],
+  ['fin.gl','General ledger'],['fin.ap','Accounts payable'],['fin.ar','Accounts receivable'],['fin.budget','Budgeting'],
+  ['fin.assets','Assets'],['fin.reports','Financial reports'],['hr.all','Human resources'],['crm.all','Sales & CRM'],
+  ['inv.receive','Receiving'],['inv.ops','Stock operations'],['reports','Reports'],['reports.full','Full reporting suite'],['audit','Audit trail']
+];
+
+/* ---------- fiscal year ---------- */
+function orgFiscal(o){ o=o||Org(); return (o&&o.fiscal)||{mode:'calendar',startMonth:1}; }
+function fiscalYearOf(d,o){
+  const dt=d?new Date(d):new Date(); const f=orgFiscal(o);
+  if(f.mode==='calendar'||!f.startMonth||f.startMonth===1)return dt.getFullYear();
+  return (dt.getMonth()+1)>=f.startMonth?dt.getFullYear()+1:dt.getFullYear();
+}
+function fyLabel(o){ const f=orgFiscal(o); const y=fiscalYearOf(null,o); return f.mode==='calendar'||f.startMonth===1?String(y):(String(y-1)+'/'+String(y)); }
+/* sequential number scoped to the current fiscal year: PREFIX-FY-0001 */
+function seqNoFY(prefix,list,field){
+  const fy=fiscalYearOf(); const pfx=prefix+'-'+fy+'-';
+  let mx=0; (list||[]).forEach(r=>{ const v=String(r[field]||''); if(v.indexOf(pfx)===0){ const m=v.match(/(\d+)$/); if(m)mx=Math.max(mx,parseInt(m[1])); } });
+  return pfx+String(mx+1).padStart(4,'0');
+}
+
+/* ---------- request categories ---------- */
+const REQ_CATEGORIES=['Procurement','Lab Reagents & Supplies','Human Resources','Finance','IT & Equipment','Logistics & Transport','Maintenance','Training','Other'];
+function categoriesFor(u){ return (u&&u.scope==='REAGENTS')?['Lab Reagents & Supplies']:REQ_CATEGORIES; }
+
+/* ---------- forced password change ---------- */
+function forcePassModal(){
+  Modal.open('Set your password',`
+    <div class="notice w">This is your first sign-in with the password issued by your administrator. Choose a new password before continuing.</div>
+    ${field({k:'np1',label:'New password',type:'password',req:true})}
+    ${field({k:'np2',label:'Confirm new password',type:'password',req:true})}
+    <div style="font-size:11.5px;color:var(--grey)">Use at least 8 characters. Your password is hashed (SHA-256) and can never be read back — only reset.</div>
+  `,`<button class="btn" onclick="savePassChange()">Save my password</button>`,true);
+}
+async function savePassChange(){
+  const f=readForm([{k:'np1',req:true},{k:'np2',req:true}]); if(!f)return;
+  if(f.np1.length<8){toast('Use at least 8 characters.','bad');return;}
+  if(f.np1!==f.np2){toast('The two passwords do not match.','bad');return;}
+  const u=Session.user; u.passHash=await sha256(f.np1); u.mustChange=false; u.passChangedAt=nowIso();
+  audit('PASSWORD_CHANGED',u.username); save(); Modal.close(); toast('Password updated.','ok');
+  if(window.afterLoginChoosers)setTimeout(afterLoginChoosers,200);
+}
+
+/* ---------- PLANNING SHEETS (collaborative) ---------- */
+function planMethodFor(amount){
+  const a=amount||0;
+  if(a<10000000)return 'Consultation Directe';
+  if(a<30000000)return 'Procédure Simplifiée';
+  return "Appel d'Offres";
+}
+Views['plan.ppm']={title:'Annual Procurement Plan (PPM)',crumb:'Planning',help:HELPref('planPpm'),render(el){
+  const rows=C('planLines');
+  const canEdit=can('plan.edit');
+  el.innerHTML=`<div class="notice i">Shared annual plan (PPM) — every requisitioner and approver works on the same sheet, so planning is collective. The recommended method is computed from the legal thresholds; if you retain a different method you must justify it. Supporting documents attached to a line help everyone pick the right budget code and method. Fiscal year: <b>${esc(fyLabel())}</b>.</div>
+  ${canEdit?`<div class="searchBar"><button class="btn" onclick="planForm()">＋ Add plan line</button><button class="btn ghost" onclick="nav('plan.ppm')">↻ Refresh</button></div>`:''}
+  <div class="card">${tbl(['Ref','Designation','Unit','Budget estimate','Confidential est.','Recommended','Retained','Planned launch','Status','Docs','Actions'],rows.map(r=>{
+    const rec=planMethodFor(r.amount);
+    const diverges=r.method&&r.method!==rec&&!r.justification;
+    const gap=(r.amount&&r.confidential)?Math.abs(r.confidential-r.amount)/r.amount*100:0;
+    return [esc(r.ref||'—'),`<b>${esc(r.designation)}</b>${diverges?'<div class="badge b-bad" style="margin-top:3px">Divergence not justified</div>':''}${gap>15?`<div class="badge b-warn" style="margin-top:3px">Estimate gap ${gap.toFixed(0)}%</div>`:''}`,esc(r.unit||''),fmtN(r.amount||0),r.confidential?fmtN(r.confidential):'—',esc(rec),esc(r.method||'—'),r.launch?fmtD(r.launch):'—',statusBadge(r.status||'PLANNED'),
+      `${(r.attachments||[]).length?`<a href="javascript:planDocs('${r.id}')">📎 ${(r.attachments||[]).length}</a>`:'<span style="color:var(--grey)">—</span>'}`,
+      `<div class="rowAct">${canEdit?`<button class="btn ghost sm" onclick="planForm('${r.id}')">Edit</button>`:''}${can('adverts')?`<button class="btn sec sm" onclick="advertForm('${r.id}')">Advert</button>`:''}${canEdit?`<button class="btn ghost sm" style="color:var(--bad)" onclick="planDel('${r.id}')">Del</button>`:''}</div>`];
+  }),{emptyTitle:'No plan lines yet',emptyMsg:'Add the acquisitions foreseen for this fiscal year — every category, whatever the amount.'})}</div>`;
+}};
+let _planAtt=[];
+function planForm(id){
+  const r=id?byId('planLines',id):{};
+  _planAtt=[];
+  const units=(Org().sections||[]).map(s=>s.name);
+  Modal.open((id?'Edit':'Add')+' plan line',`
+    <div class="grid2">${field({k:'ref',label:'Plan reference',ph:'e.g. INSAPT/LNSP/PS/01'},r.ref)}${field({k:'designation',label:'Designation',req:true},r.designation)}</div>
+    <div class="grid2">${units.length?field({k:'unit',label:'Requesting unit',type:'select',opts:units},r.unit):field({k:'unit',label:'Requesting unit'},r.unit)}${field({k:'category',label:'Category',type:'select',opts:REQ_CATEGORIES},r.category)}</div>
+    <div class="grid2">${field({k:'amount',label:'Budget estimate ('+esc(Org().currency)+')',type:'number',req:true},r.amount)}${field({k:'confidential',label:'Confidential estimate (Autorité Contractante)',type:'number'},r.confidential)}</div>
+    <div id="planRec" class="notice i"></div>
+    <div class="grid2">${field({k:'method',label:'Method retained',type:'select',opts:['','Consultation Directe','Procédure Simplifiée',"Appel d'Offres",'Gré à Gré','Circuit CPA']},r.method)}${field({k:'launch',label:'Planned launch date',type:'date'},r.launch)}</div>
+    ${field({k:'justification',label:'Justification if the retained method differs from the recommendation',type:'textarea'},r.justification)}
+    <div class="grid2">${field({k:'status',label:'Status',type:'select',opts:[['PLANNED','Planned'],['IN_PROGRESS','In progress'],['COMPLETED','Completed'],['ONHOLD','On hold']]},r.status||'PLANNED')}${field({k:'owner',label:'Responsible'},r.owner||Session.user.name)}</div>
+    <label>Supporting documents (specifications, quotes, prior contracts…)</label>
+    ${attachControl('planAtt')}
+    ${id&&(r.attachments||[]).length?`<div style="margin-top:6px">${(r.attachments||[]).map(a=>`<a class="fileChip" href="${a.data}" download="${esc(a.name)}" style="text-decoration:none">📎 ${esc(a.name)}</a>`).join('')}</div>`:''}
+  `,`<button class="btn ghost" onclick="Modal.close()">Cancel</button><button class="btn" onclick="planSave('${id||''}')">Save plan line</button>`,true);
+  bindAttach('planAtt',_planAtt);
+  const upd=()=>{const a=parseFloat(($('f_amount')||{}).value)||0; const c=parseFloat(($('f_confidential')||{}).value)||0;
+    const gap=(a&&c)?Math.abs(c-a)/a*100:0;
+    $('planRec').innerHTML=`Recommended method for ${fmtN(a)} ${esc(Org().currency)}: <b>${esc(planMethodFor(a))}</b>${gap?` · estimate gap <b style="color:${gap>15?'var(--bad)':'var(--ok)'}">${gap.toFixed(0)}%</b>${gap>15?' — flagged for SPM verification':''}`:''}`;};
+  ['f_amount','f_confidential'].forEach(k=>{const e=$(k);if(e)e.addEventListener('input',upd);}); upd();
+}
+function planSave(id){
+  const f=readForm([{k:'ref'},{k:'designation',req:true},{k:'unit'},{k:'category'},{k:'amount',type:'number',req:true},{k:'confidential',type:'number'},{k:'method'},{k:'launch'},{k:'justification'},{k:'status'},{k:'owner'}]); if(!f)return;
+  let r=id?byId('planLines',id):null;
+  if(!r){ r={id:uid('pl'),orgId:Session.user.orgId,createdAt:nowIso(),attachments:[],fy:fiscalYearOf()}; col('planLines').push(r); }
+  Object.assign(r,f,{updatedAt:nowIso(),updatedBy:Session.user.name});
+  _planAtt.forEach(a=>{r.attachments=r.attachments||[];r.attachments.push(a);});
+  audit('PLAN_SAVE',(r.ref||r.designation)); save(); Modal.close(); nav('plan.ppm'); toast('Plan line saved — visible to everyone on the plan.','ok');
+}
+function planDel(id){ if(!confirm('Remove this plan line?'))return; const i=col('planLines').findIndex(x=>x.id===id); if(i>-1)col('planLines').splice(i,1); audit('PLAN_DEL',id); save(); nav('plan.ppm'); }
+function planDocs(id){ const r=byId('planLines',id); Modal.open('Documents — '+esc(r.designation),`<div>${(r.attachments||[]).map(a=>`<a class="fileChip" href="${a.data}" download="${esc(a.name)}" style="text-decoration:none">📎 ${esc(a.name)}</a>`).join('')||'No files.'}</div>`,`<button class="btn ghost" onclick="Modal.close()">Close</button>`); }
+
+/* --- reagent forecasting sheet (D14 methodology) --- */
+function reagentCalc(r){
+  const cmm=(r.tests||0)*(r.rate||0);
+  const qty=Math.max(0, cmm*(r.seasonal||1)*(r.cycle||1) + (r.safety||0)*cmm - (r.stock||0));
+  const cap=cmm*((r.shelf||0)*0.75);
+  const monthsCover=cmm?((r.stock||0)/cmm):0;
+  return {cmm,qty,cap,exceeds:cap>0&&qty>cap,monthsCover};
+}
+Views['plan.reagents']={title:'Reagent Forecasting',crumb:'Planning',help:HELPref('planReagents'),render(el){
+  const rows=C('reagentPlan'); const canEdit=can('plan.edit');
+  let alerts=0,order=0;
+  const body=rows.map(r=>{ const c=reagentCalc(r); if(c.exceeds)alerts++; if(c.monthsCover<=2)order++;
+    return [esc(r.name),esc(r.unit||''),fmtN(r.tests||0),fmtN(c.cmm.toFixed(1)),fmtN(r.stock||0),
+      `<b>${fmtN(Math.round(c.qty))}</b>`,fmtN(Math.round(c.cap)),
+      c.exceeds?'<span class="badge b-bad">Exceeds anti-expiry cap</span>':'<span class="badge b-ok">Within cap</span>',
+      c.monthsCover<=2?`<span class="badge b-warn">${c.monthsCover.toFixed(1)} mo cover</span>`:`${c.monthsCover.toFixed(1)} mo`,
+      r.coldChain==='yes'?'❄️':'—',
+      `<div class="rowAct">${canEdit?`<button class="btn ghost sm" onclick="reagentForm('${r.id}')">Edit</button><button class="btn ghost sm" style="color:var(--bad)" onclick="reagentDel('${r.id}')">Del</button>`:''}</div>`];});
+  el.innerHTML=`<div class="notice i">Consumption-based forecasting: <b>Quantity = (Average monthly consumption × Seasonal factor × Cycle months) + Safety stock − Stock on hand</b>, capped so no order exceeds what can be consumed before 75% of remaining shelf life expires. Negative quantities are held at zero.</div>
+  <div class="kpiRow"><div class="kpi"><div class="kl">Reagents tracked</div><div class="kv">${rows.length}</div></div><div class="kpi"><div class="kl">Above anti-expiry cap</div><div class="kv">${alerts}</div></div><div class="kpi"><div class="kl">Cover ≤ 2 months</div><div class="kv">${order}</div></div></div>
+  ${canEdit?`<div class="searchBar"><button class="btn" onclick="reagentForm()">＋ Add reagent</button></div>`:''}
+  <div class="card">${tbl(['Reagent / Analyte','Unit','Monthly tests','Avg monthly consumption','Stock','Qty to order','Anti-expiry cap','Cap check','Cover','Cold chain','Actions'],body,{emptyTitle:'No reagents planned yet',emptyMsg:'Add the analytes tracked by the LNSP / LaBiep register.'})}</div>`;
+}};
+function reagentForm(id){
+  const r=id?byId('reagentPlan',id):{};
+  Modal.open((id?'Edit':'Add')+' reagent forecast',`
+    <div class="grid2">${field({k:'name',label:'Reagent / Analyte',req:true},r.name)}${field({k:'unit',label:'Unit',ph:'kit, flacon…'},r.unit)}</div>
+    <div class="grid2">${field({k:'tests',label:'Average monthly tests (12 months)',type:'number',req:true},r.tests)}${field({k:'rate',label:'Consumption per test (incl. loss factor)',type:'number',req:true},r.rate!=null?r.rate:1)}</div>
+    <div class="grid2">${field({k:'stock',label:'Stock on hand',type:'number'},r.stock||0)}${field({k:'safety',label:'Safety stock (months)',type:'number'},r.safety!=null?r.safety:1)}</div>
+    <div class="grid2">${field({k:'seasonal',label:'Seasonal factor',type:'number'},r.seasonal!=null?r.seasonal:1)}${field({k:'cycle',label:'Purchase cycle (months)',type:'number'},r.cycle!=null?r.cycle:2)}</div>
+    <div class="grid2">${field({k:'shelf',label:'Remaining shelf life at receipt (months)',type:'number'},r.shelf!=null?r.shelf:12)}${field({k:'coldChain',label:'Cold chain',type:'select',opts:[['no','No'],['yes','Yes']]},r.coldChain||'no')}</div>
+    ${field({k:'category',label:'Reagent category',type:'select',opts:['Réactifs standards (fournisseurs pré-qualifiés) — 6 semaines','Réactifs spécialisés ou à faible rotation — 3 mois','Pathogènes émergents (hors liste essentielle) — selon PTF']},r.category)}
+    <div id="reagPrev" class="notice i"></div>
+  `,`<button class="btn ghost" onclick="Modal.close()">Cancel</button><button class="btn" onclick="reagentSave('${id||''}')">Save</button>`,true);
+  const upd=()=>{const g=k=>parseFloat(($('f_'+k)||{}).value)||0;
+    const c=reagentCalc({tests:g('tests'),rate:g('rate'),stock:g('stock'),safety:g('safety'),seasonal:g('seasonal'),cycle:g('cycle'),shelf:g('shelf')});
+    $('reagPrev').innerHTML=`Average monthly consumption <b>${c.cmm.toFixed(1)}</b> · quantity to order <b>${Math.round(c.qty)}</b> · anti-expiry cap <b>${Math.round(c.cap)}</b> ${c.exceeds?'<span style="color:var(--bad)">— order exceeds the cap, reduce the cycle</span>':''}`;};
+  ['tests','rate','stock','safety','seasonal','cycle','shelf'].forEach(k=>{const e=$('f_'+k);if(e)e.addEventListener('input',upd);}); upd();
+}
+function reagentSave(id){
+  const f=readForm([{k:'name',req:true},{k:'unit'},{k:'tests',type:'number',req:true},{k:'rate',type:'number',req:true},{k:'stock',type:'number'},{k:'safety',type:'number'},{k:'seasonal',type:'number'},{k:'cycle',type:'number'},{k:'shelf',type:'number'},{k:'coldChain'},{k:'category'}]); if(!f)return;
+  let r=id?byId('reagentPlan',id):null;
+  if(!r){ r={id:uid('rg'),orgId:Session.user.orgId,createdAt:nowIso(),fy:fiscalYearOf()}; col('reagentPlan').push(r); }
+  Object.assign(r,f,{updatedAt:nowIso(),updatedBy:Session.user.name});
+  audit('REAGENT_PLAN_SAVE',r.name); save(); Modal.close(); nav('plan.reagents'); toast('Reagent forecast saved.','ok');
+}
+function reagentDel(id){ if(!confirm('Remove this reagent line?'))return; const i=col('reagentPlan').findIndex(x=>x.id===id); if(i>-1)col('reagentPlan').splice(i,1); save(); nav('plan.reagents'); }
+
+/* --- reagent stock lots (D18, FEFO) --- */
+function lotDays(l){ if(!l.expiry)return null; return Math.round((new Date(l.expiry)-new Date())/86400000); }
+Views['plan.lots']={title:'Reagent Stock Lots (FEFO)',crumb:'Planning',help:HELPref('planLots'),render(el){
+  const rows=C('reagentLots').slice().sort((a,b)=>String(a.expiry||'').localeCompare(String(b.expiry||'')));
+  const canEdit=can('plan.edit')||can('inv.ops');
+  let expired=0,val=0,soon=0;
+  const body=rows.map(l=>{ const d=lotDays(l); const v=(l.qty||0)*(l.price||0); val+=v;
+    if(d!=null&&d<0)expired++; else if(d!=null&&d<=90)soon++;
+    const alert=d==null?'—':d<0?'<span class="badge b-bad">Expired — withdraw</span>':d<=90?`<span class="badge b-warn">${d} days left</span>`:`<span class="badge b-ok">${d} days</span>`;
+    return [esc(l.lot),esc(l.name),esc(l.supplier||''),fmtN(l.qty||0)+' '+esc(l.unit||''),fmtN(v),l.received?fmtD(l.received):'—',l.expiry?fmtD(l.expiry):'—',esc(l.location||''),esc(l.temp||''),alert,
+      `<div class="rowAct">${canEdit?`<button class="btn ghost sm" onclick="lotForm('${l.id}')">Edit</button><button class="btn ghost sm" style="color:var(--bad)" onclick="lotDel('${l.id}')">Del</button>`:''}</div>`];});
+  el.innerHTML=`<div class="notice i">FEFO monitoring (First Expired, First Out) — lots are listed by expiry date so the earliest-expiring stock is issued first. This is the control that prevents the kind of reagent write-off recorded in 2019–2020.</div>
+  <div class="kpiRow"><div class="kpi"><div class="kl">Lots tracked</div><div class="kv">${rows.length}</div></div><div class="kpi"><div class="kl">Total stock value</div><div class="kv">${fmtN(val)}</div></div><div class="kpi"><div class="kl">Expiring ≤ 90 days</div><div class="kv">${soon}</div></div><div class="kpi"><div class="kl">Expired lots</div><div class="kv">${expired}</div></div></div>
+  ${canEdit?`<div class="searchBar"><button class="btn" onclick="lotForm()">＋ Add lot</button></div>`:''}
+  <div class="card">${tbl(['Lot','Reagent','Supplier','Quantity','Value','Received','Expiry','Location','Storage','FEFO alert','Actions'],body,{emptyTitle:'No lots recorded yet',emptyMsg:'Record received reagent lots with their expiry dates to activate FEFO monitoring.'})}</div>`;
+}};
+function lotForm(id){
+  const l=id?byId('reagentLots',id):{};
+  Modal.open((id?'Edit':'Add')+' reagent lot',`
+    <div class="grid2">${field({k:'lot',label:'Lot number',req:true,ph:'LOT-2601'},l.lot)}${field({k:'name',label:'Reagent / Analyte',req:true},l.name)}</div>
+    <div class="grid2">${field({k:'supplier',label:'Supplier'},l.supplier)}${field({k:'unit',label:'Unit'},l.unit)}</div>
+    <div class="grid2">${field({k:'qty',label:'Quantity in stock',type:'number',req:true},l.qty)}${field({k:'price',label:'Estimated unit price',type:'number'},l.price)}</div>
+    <div class="grid2">${field({k:'received',label:'Date received',type:'date'},l.received)}${field({k:'expiry',label:'Expiry date',type:'date',req:true},l.expiry)}</div>
+    <div class="grid2">${field({k:'location',label:'Location',ph:'LaBiep — Réfrigérateur 2'},l.location)}${field({k:'temp',label:'Storage temperature',ph:'2-8°C'},l.temp)}</div>
+  `,`<button class="btn ghost" onclick="Modal.close()">Cancel</button><button class="btn" onclick="lotSave('${id||''}')">Save lot</button>`);
+}
+function lotSave(id){
+  const f=readForm([{k:'lot',req:true},{k:'name',req:true},{k:'supplier'},{k:'unit'},{k:'qty',type:'number',req:true},{k:'price',type:'number'},{k:'received'},{k:'expiry',req:true},{k:'location'},{k:'temp'}]); if(!f)return;
+  let l=id?byId('reagentLots',id):null;
+  if(!l){ l={id:uid('lot'),orgId:Session.user.orgId,createdAt:nowIso()}; col('reagentLots').push(l); }
+  Object.assign(l,f,{updatedAt:nowIso(),updatedBy:Session.user.name});
+  audit('LOT_SAVE',l.lot); save(); Modal.close(); nav('plan.lots'); toast('Lot saved.','ok');
+}
+function lotDel(id){ if(!confirm('Remove this lot?'))return; const i=col('reagentLots').findIndex(x=>x.id===id); if(i>-1)col('reagentLots').splice(i,1); save(); nav('plan.lots'); }
+
+/* ---------- ADVERTS (Procurement Specialists) ---------- */
+Views['pr.adverts']={title:'Adverts / Tender Notices',crumb:'Procurement',help:HELPref('adverts'),render(el){
+  const ads=C('adverts');
+  el.innerHTML=`<div class="notice i">Create tender notices (Avis d'Appel d'Offres / Avis à Manifestation d'Intérêt) directly from an approved plan line — the designation, method, estimate and unit are carried over so the notice always matches the plan.</div>
+  <div class="searchBar"><button class="btn" onclick="advertForm()">＋ New advert</button></div>
+  <div class="card">${tbl(['N°','Title','Method','Plan ref','Published','Deadline','Status','Actions'],ads.map(a=>[esc(a.no),`<b>${esc(a.title)}</b>`,esc(a.method||''),esc(a.planRef||'—'),a.published?fmtD(a.published):'—',a.deadline?fmtD(a.deadline):'—',statusBadge(a.status||'DRAFT'),
+    `<div class="rowAct"><button class="btn ghost sm" onclick="advertForm(null,'${a.id}')">Edit</button><button class="btn sec sm" onclick="printAdvert('${a.id}')">🖨️ Print</button>${a.status==='DRAFT'?`<button class="btn ok sm" onclick="advertPublish('${a.id}')">Publish</button>`:''}</div>`]),
+    {emptyTitle:'No adverts yet',emptyMsg:'Generate your first tender notice from a plan line.'})}</div>`;
+}};
+function advertForm(planId,id){
+  const a=id?byId('adverts',id):{};
+  const pl=planId?byId('planLines',planId):(a.planId?byId('planLines',a.planId):null);
+  const plans=C('planLines');
+  Modal.open((id?'Edit':'New')+' advert / tender notice',`
+    ${field({k:'planId',label:'Source plan line',type:'select',opts:[['','— Not linked to the plan —']].concat(plans.map(p=>[p.id,(p.ref?p.ref+' · ':'')+p.designation]))},pl?pl.id:'')}
+    <div class="grid2">${field({k:'title',label:'Notice title',req:true},a.title||(pl?pl.designation:''))}${field({k:'method',label:'Procurement method',type:'select',opts:['Consultation Directe','Procédure Simplifiée',"Appel d'Offres National","Appel d'Offres International",'Avis à Manifestation d\'Intérêt']},a.method||(pl?pl.method:''))}</div>
+    <div class="grid2">${field({k:'amount',label:'Estimated amount ('+esc(Org().currency)+')',type:'number'},a.amount||(pl?pl.amount:''))}${field({k:'unit',label:'Beneficiary unit'},a.unit||(pl?pl.unit:''))}</div>
+    <div class="grid2">${field({k:'published',label:'Publication date',type:'date'},a.published)}${field({k:'deadline',label:'Submission deadline',type:'date',req:true},a.deadline)}</div>
+    ${field({k:'scope',label:'Object and scope of the notice',type:'textarea',req:true},a.scope)}
+    ${field({k:'requirements',label:'Eligibility and required documents',type:'textarea'},a.requirements||'Attestation fiscale, registre de commerce, références similaires, offre technique et financière sous plis séparés.')}
+  `,`<button class="btn ghost" onclick="Modal.close()">Cancel</button><button class="btn" onclick="advertSave('${id||''}')">Save advert</button>`,true);
+}
+function advertSave(id){
+  const f=readForm([{k:'planId'},{k:'title',req:true},{k:'method'},{k:'amount',type:'number'},{k:'unit'},{k:'published'},{k:'deadline',req:true},{k:'scope',req:true},{k:'requirements'}]); if(!f)return;
+  let a=id?byId('adverts',id):null;
+  if(!a){ a={id:uid('adv'),orgId:Session.user.orgId,no:seqNoFY('AVIS',C('adverts'),'no'),status:'DRAFT',createdAt:nowIso(),createdBy:Session.user.name}; col('adverts').push(a); }
+  const pl=f.planId?byId('planLines',f.planId):null;
+  Object.assign(a,f,{planRef:pl?(pl.ref||pl.designation):'',updatedAt:nowIso()});
+  audit('ADVERT_SAVE',a.no); save(); Modal.close(); nav('pr.adverts'); toast('Advert '+a.no+' saved.','ok');
+}
+function advertPublish(id){ const a=byId('adverts',id); a.status='OPEN'; a.published=a.published||today(); audit('ADVERT_PUBLISH',a.no); save(); nav('pr.adverts'); toast(a.no+' published.','ok'); }
+function printAdvert(id){
+  const a=byId('adverts',id); const org=Org();
+  const z=$('printZone');
+  z.innerHTML=`<div style="font-family:Arial;color:#152435;padding:34px;max-width:820px;margin:auto">
+    <div style="text-align:center;border-bottom:4px solid #1B5CC4;padding-bottom:12px">
+      <div style="font-size:11px;letter-spacing:.1em;color:#5B6B7E">${esc(org.country==='Chad'?'RÉPUBLIQUE DU TCHAD — Unité · Travail · Progrès':org.country||'')}</div>
+      <div style="font-size:19px;font-weight:800;color:#0E2A4F;margin-top:4px">${esc(org.name)}</div>
+      <div style="font-size:22px;font-weight:800;color:#1B5CC4;margin-top:12px">AVIS — ${esc((a.method||'').toUpperCase())}</div>
+      <div style="font-size:14px;font-weight:700">N° ${esc(a.no)}</div></div>
+    <table style="width:100%;margin-top:16px;font-size:13px">
+      <tr><td style="padding:4px 0;width:34%"><b>Objet</b></td><td>${esc(a.title)}</td></tr>
+      <tr><td style="padding:4px 0"><b>Unité bénéficiaire</b></td><td>${esc(a.unit||'—')}</td></tr>
+      <tr><td style="padding:4px 0"><b>Référence au PPM</b></td><td>${esc(a.planRef||'—')}</td></tr>
+      <tr><td style="padding:4px 0"><b>Date de publication</b></td><td>${a.published?fmtD(a.published):'—'}</td></tr>
+      <tr><td style="padding:4px 0"><b>Date limite de dépôt</b></td><td><b>${a.deadline?fmtD(a.deadline):'—'}</b></td></tr>
+    </table>
+    <div style="margin-top:16px"><b style="color:#0E2A4F">OBJET ET ÉTENDUE</b><div style="font-size:12.5px;line-height:1.6;margin-top:6px;white-space:pre-wrap">${esc(a.scope||'')}</div></div>
+    <div style="margin-top:14px"><b style="color:#0E2A4F">CONDITIONS DE PARTICIPATION</b><div style="font-size:12.5px;line-height:1.6;margin-top:6px;white-space:pre-wrap">${esc(a.requirements||'')}</div></div>
+    <table style="width:100%;margin-top:34px;font-size:12.5px"><tr><td style="text-align:center"><div style="border-top:1.5px solid #152435;margin:46px 80px 6px"></div><b>${esc((org.flow&&org.flow.finalLabel)||'Le Directeur Général')}</b></td></tr></table>
+    <div style="margin-top:22px;text-align:center;font-size:10px;color:#8A94A3;border-top:1px solid #D8E2EF;padding-top:8px">Généré par ForTé ERP Pro · © ForTe Tools Is40v31 – Innocent Forteh</div></div>`;
+  z.style.display='block'; window.print(); setTimeout(()=>{z.style.display='none';},400);
+}
+
+/* ---------- Fiscal year config (admin) ---------- */
+Views['adm.fiscal']={title:'Fiscal Year',crumb:'Administration',help:HELPref('fiscal'),render(el){
+  const f=orgFiscal();
+  el.innerHTML=`<div class="card"><h3>Fiscal year configuration</h3>
+    <div class="notice i">Procurement records are numbered and reported by fiscal year. INSAPT follows the calendar year; other organizations can set a different start month. Current fiscal year: <b>${esc(fyLabel())}</b>.</div>
+    <div class="grid2">
+      ${field({k:'mode',label:'Fiscal year basis',type:'select',opts:[['calendar','Calendar year (January – December)'],['custom','Custom start month']]},f.mode)}
+      ${field({k:'startMonth',label:'Start month (custom only)',type:'select',opts:[[1,'January'],[2,'February'],[3,'March'],[4,'April'],[5,'May'],[6,'June'],[7,'July'],[8,'August'],[9,'September'],[10,'October'],[11,'November'],[12,'December']]},f.startMonth||1)}
+    </div>
+    <div class="btnRow"><button class="btn" onclick="saveFiscal()">Save fiscal year</button></div></div>`;
+}};
+function saveFiscal(){
+  const f=readForm([{k:'mode'},{k:'startMonth',type:'number'}]); const o=Org();
+  o.fiscal={mode:f.mode,startMonth:f.startMonth||1};
+  audit('FISCAL_CONFIG',JSON.stringify(o.fiscal)); save(); toast('Fiscal year saved — new records use '+fyLabel()+'.','ok'); nav('adm.fiscal');
+}
+
+/* ---------- Admin account manager (org-level, full rights) ---------- */
+Views['adm.accounts']={title:'Staff Accounts',crumb:'Administration',help:HELPref('admAccounts'),render(el){
+  const us=C('users');
+  el.innerHTML=`<div class="notice i">Create staff accounts, assign one or several responsibilities, and restrict exactly which functions each account may use. New accounts must change their password at first sign-in.</div>
+  <div class="searchBar"><button class="btn" onclick="acctForm()">＋ Create staff account</button></div>
+  <div class="card">${tbl(['Username','Name','Responsibilities','Restricted to','Scope','Last login','Status','Actions'],us.map(u=>[
+    `<b>${esc(u.username)}</b>`,esc(u.name),rolesOf(u).map(r=>`<span class="badge b-blue" style="margin:1px">${esc(roleLabel(r))}</span>`).join(' '),
+    (u.functions&&u.functions.length)?`<span class="badge b-amber">${u.functions.length} functions</span>`:'<span style="color:var(--grey)">All of its roles</span>',
+    esc(u.scope==='REAGENTS'?'Reagents & lab supplies':'—'),u.lastLogin?fmtDT(u.lastLogin):'never',
+    u.active!==false?'<span class="badge b-ok">Active</span>':'<span class="badge b-bad">Off</span>',
+    `<div class="rowAct"><button class="btn ghost sm" onclick="acctForm('${u.id}')">Edit</button><button class="btn sec sm" onclick="acctReset('${u.id}')">Reset pw</button><button class="btn ghost sm" style="color:${u.active!==false?'var(--bad)':'var(--ok)'}" onclick="acctToggle('${u.id}')">${u.active!==false?'Deactivate':'Reactivate'}</button><button class="btn ghost sm" style="color:var(--bad)" onclick="acctDel('${u.id}')">Delete</button></div>`]),
+    {emptyTitle:'No accounts yet'})}</div>`;
+}};
+const ASSIGNABLE_ROLES=['requisitioner','approver','procurement','procspec','contracting','actingcontracting','finance','dg','receiver','store','hr','sales','viewer','orgadmin'];
+function acctForm(id){
+  const u=id?byId('users',id):{};
+  const rs=rolesOf(u); const fns=u.functions||[];
+  const secs=(Org().sections||[]).map(s=>s.name);
+  Modal.open((id?'Edit':'Create')+' staff account',`
+    <div class="grid2">${field({k:'username',label:'Username',req:true,ph:'e.g. a.mingar'},u.username)}${field({k:'name',label:'Full name',req:true},u.name)}</div>
+    <div class="grid2">${secs.length?field({k:'section',label:'Section / department',type:'select',opts:[''].concat(secs)},u.section):field({k:'section',label:'Section / department'},u.section)}${field({k:'email',label:'Email',type:'email'},u.email)}</div>
+    ${id?'':field({k:'pass',label:'Initial password (required at first sign-in)',req:true})}
+    <label>Responsibilities (roles) <span class="req">*</span></label>
+    <div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:12px">${ASSIGNABLE_ROLES.map(r=>`<label class="modToggle"><input type="checkbox" class="roleChk" value="${r}" ${rs.indexOf(r)>-1||(!id&&r==='requisitioner')?'checked':''}> ${esc(roleLabel(r))}</label>`).join('')}</div>
+    <label>Restrict to specific functions <small style="color:var(--grey)">(leave all unticked to grant everything the roles allow)</small></label>
+    <div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:12px">${FUNCTION_DEFS.map(f=>`<label class="modToggle"><input type="checkbox" class="fnChk" value="${f[0]}" ${fns.indexOf(f[0])>-1?'checked':''}> ${esc(f[1])}</label>`).join('')}</div>
+    ${field({k:'scope',label:'Subject-matter scope',type:'select',opts:[['','No restriction'],['REAGENTS','Reagents & lab supplies only']]},u.scope||'')}
+  `,`<button class="btn ghost" onclick="Modal.close()">Cancel</button><button class="btn" onclick="acctSave('${id||''}')">Save account</button>`,true);
+}
+async function acctSave(id){
+  const fields=[{k:'username',req:true},{k:'name',req:true},{k:'section'},{k:'email'},{k:'scope'}]; if(!id)fields.push({k:'pass',req:true});
+  const f=readForm(fields); if(!f)return;
+  const roles=[...document.querySelectorAll('.roleChk')].filter(c=>c.checked).map(c=>c.value);
+  if(!roles.length){toast('Select at least one responsibility.','bad');return;}
+  if(roles.indexOf('requisitioner')===-1)roles.unshift('requisitioner'); // everyone can request
+  const functions=[...document.querySelectorAll('.fnChk')].filter(c=>c.checked).map(c=>c.value);
+  if(!id&&col('users').some(x=>x.username.toLowerCase()===f.username.toLowerCase())){toast('That username already exists.','bad');return;}
+  let u=id?byId('users',id):null;
+  if(!u){ u={id:uid('u'),orgId:Session.user.orgId,active:true,createdAt:nowIso(),passHash:await sha256(f.pass),mustChange:true}; col('users').push(u); }
+  Object.assign(u,{username:f.username,name:f.name,section:f.section,email:f.email,scope:f.scope,roles,role:roles[0],functions});
+  audit('ACCOUNT_SAVE',u.username+' ['+roles.join(', ')+']'); save(); Modal.close(); nav('adm.accounts'); toast('Account saved.','ok');
+}
+async function acctReset(id){ const p=prompt('New password for this account (they must change it at next sign-in):'); if(!p)return; const u=byId('users',id); u.passHash=await sha256(p); u.mustChange=true; audit('ACCOUNT_PASSRESET',u.username); save(); toast('Password reset for '+u.username+'.','ok'); }
+function acctToggle(id){ const u=byId('users',id); u.active=u.active===false; audit('ACCOUNT_TOGGLE',u.username); save(); nav('adm.accounts'); }
+function acctDel(id){ const u=byId('users',id); if(u.id===Session.user.id){toast('You cannot delete the account you are signed in with.','bad');return;} if(!confirm('Delete the account "'+u.username+'"? Their historical records stay in the system.'))return; const i=col('users').findIndex(x=>x.id===id); if(i>-1)col('users').splice(i,1); audit('ACCOUNT_DELETE',u.username); save(); nav('adm.accounts'); toast('Account deleted.','ok'); }
+
+/* ---------- extra reports ---------- */
+const REPORT_EXT={
+  plan:function(){ const R=_repScope('planLines'); return {title:'Annual Procurement Plan',head:['Ref','Designation','Unit','Budget estimate','Recommended','Retained','Launch','Status'],rows:R.map(p=>[p.ref||'',p.designation,p.unit||'',fmtN(p.amount||0),planMethodFor(p.amount),p.method||'',p.launch?fmtD(p.launch):'',p.status||''])}; },
+  adverts:function(){ const R=_repScope('adverts'); return {title:'Adverts / Tender Notices',head:['N°','Title','Method','Plan ref','Published','Deadline','Status'],rows:R.map(a=>[a.no,a.title,a.method||'',a.planRef||'',a.published?fmtD(a.published):'',a.deadline?fmtD(a.deadline):'',a.status||''])}; },
+  status:function(){ const R=_repScope('reqs'); return {title:'Request Status Report',head:['N°','Title','Category','Requester','Section','Amount','Status','Last update'],rows:R.map(r=>[r.no,r.title,r.category||'',r.requesterName||'',r.section||'',fmtN(grandTotalOf(r)),r.status,(r.history&&r.history.length)?fmtDT(r.history[r.history.length-1].at):''])}; },
+  reagents:function(){ const R=_repScope('reagentPlan'); return {title:'Reagent Forecast',head:['Reagent','Unit','Monthly consumption','Stock','Qty to order','Cap','Cover (months)'],rows:R.map(r=>{const c=reagentCalc(r);return [r.name,r.unit||'',c.cmm.toFixed(1),fmtN(r.stock||0),Math.round(c.qty),Math.round(c.cap),c.monthsCover.toFixed(1)];})}; },
+  lots:function(){ const R=_repScope('reagentLots'); return {title:'Reagent Stock Lots (FEFO)',head:['Lot','Reagent','Qty','Value','Received','Expiry','Days left','Location'],rows:R.map(l=>{const d=lotDays(l);return [l.lot,l.name,fmtN(l.qty||0),fmtN((l.qty||0)*(l.price||0)),l.received?fmtD(l.received):'',l.expiry?fmtD(l.expiry):'',d==null?'':d,l.location||''];})}; }
+};
+function _repScope(name){ const me=Session.user; return (hasRole(me,'superadmin')&&!me.orgId)?col(name):C(name); }
+const _repCenterBase=Views['rep.center'].render;
+Views['rep.center'].render=function(el){
+  _repCenterBase.call(this,el);
+  const extra=document.createElement('div'); extra.className='grid2';
+  extra.innerHTML=repCard('status','Request status report','Every requisition with its category, amount and current stage.')
+    +repCard('plan','Annual plan (PPM)','All plan lines with recommended vs retained method.')
+    +repCard('adverts','Adverts register','Tender notices issued, with deadlines and status.')
+    +repCard('reagents','Reagent forecast','Consumption, quantity to order and anti-expiry cap.')
+    +repCard('lots','Stock lots (FEFO)','Lots by expiry with value and days remaining.');
+  el.appendChild(extra);
+};
+
+/* ---------- help ---------- */
+Object.assign(HELP,{
+ planPpm:`<h4>Annual Procurement Plan</h4><ol><li>Everyone with planning rights edits the <b>same shared sheet</b> — plan lines are not private to one account.</li><li>The <b>recommended method</b> is computed from the legal thresholds; if you retain something different, write the justification, otherwise the line is flagged.</li><li>The <b>confidential estimate</b> sits beside the budget estimate; a gap above 15% is flagged for verification.</li><li>Attach specifications or prior quotes so colleagues can pick the right code and method.</li></ol>`,
+ planReagents:`<h4>Reagent forecasting</h4><p>Quantity to order = (average monthly consumption × seasonal factor × cycle months) + safety stock − stock on hand, capped at what can be consumed before 75% of remaining shelf life. Quantities never go below zero.</p>`,
+ planLots:`<h4>Stock lots — FEFO</h4><p>Lots are ordered by expiry date so the earliest-expiring stock is issued first. Lots within 90 days are flagged; expired lots are marked for withdrawal.</p>`,
+ adverts:`<h4>Adverts / tender notices</h4><p>Procurement Specialists generate notices from plan lines so the advert always matches the approved plan. Save as draft, print for signature, then publish.</p>`,
+ fiscal:`<h4>Fiscal year</h4><p>Requisitions, instruments and adverts are numbered per fiscal year (e.g. REQ-2026-0001). Calendar year is the default; other organizations can pick a start month.</p>`,
+ admAccounts:`<h4>Staff accounts</h4><ol><li>Create the account and issue an initial password — the user must change it at first sign-in.</li><li>Tick one or several <b>responsibilities</b>; every account keeps the requisitioner role so anyone can raise a request.</li><li>Optionally tick <b>specific functions</b> to narrow what the account may use; leave them all unticked to grant whatever the roles allow.</li></ol>`
+});
+
+
+/* --- V1.4 French dictionary additions --- */
+Object.assign(L, {"(leave all unticked to grant everything the roles allow)": "(ne rien cocher pour accorder tout ce que les rôles permettent)", ", capped so no order exceeds what can be consumed before 75% of remaining shelf life expires. Negative quantities are held at zero.": "— plafonnée afin qu’aucune commande ne dépasse la quantité consommable avant l’expiration de 75% de la durée de vie restante. Les quantités négatives sont ramenées à zéro.", "Above anti-expiry cap": "Dépasse le plafond anti-péremption", "Accounts payable": "Comptes fournisseurs", "Accounts receivable": "Comptes clients", "Acting Contracting Officer": "Chargé des Marchés par intérim", "Add plan line": "Ajouter une ligne du plan", "Add reagent forecast": "Ajouter une prévision de réactif", "Add reagent lot": "Ajouter un lot de réactif", "Add the acquisitions foreseen for this fiscal year — every category, whatever the amount.": "Inscrivez les acquisitions prévues pour cet exercice — toutes catégories, quel que soit le montant.", "Add the analytes tracked by the LNSP / LaBiep register.": "Ajoutez les analytes suivis par le registre LNSP / LaBiep.", "Adverts / Notices": "Avis / Publicité", "Adverts / Tender Notices": "Avis d’Appel d’Offres", "Adverts register": "Registre des avis", "All of its roles": "Tout ce que ses rôles permettent", "All plan lines with recommended vs retained method.": "Toutes les lignes du plan avec méthode recommandée vs retenue.", "Annual Plan (PPM)": "Plan annuel (PPM)", "Annual Procurement Plan (PPM)": "Plan Annuel de Passation des Marchés (PPM)", "Annual plan (PPM)": "Plan annuel (PPM)", "Approve requisitions": "Approuver les réquisitions", "April": "Avril", "Audit trail": "Piste d’audit", "August": "Août", "Average monthly consumption": "Consommation mensuelle moyenne", "Average monthly tests (12 months)": "Volume mensuel moyen de tests (12 mois)", "Beneficiary unit": "Unité bénéficiaire", "Budget estimate (FCFA)": "Estimation budgétaire (FCFA)", "Calendar year (January – December)": "Année civile (janvier – décembre)", "Cold chain": "Chaîne du froid", "Completed": "Terminé", "Confidential estimate (Autorité Contractante)": "Estimation confidentielle (Autorité Contractante)", "Confirm funding": "Confirmer le financement", "Confirm new password": "Confirmer le nouveau mot de passe", "Consumption per test (incl. loss factor)": "Consommation par test (facteur de perte inclus)", "Consumption, quantity to order and anti-expiry cap.": "Consommation, quantité à commander et plafond anti-péremption.", "Consumption-based forecasting:": "Prévision fondée sur la consommation :", "Contract register": "Registre des contrats", "Contracting Officer": "Chargé des Marchés", "Cover ≤ 2 months": "Couverture ≤ 2 mois", "Create adverts": "Créer des avis", "Create staff account": "Créer un compte agent", "Create staff accounts, assign one or several responsibilities, and restrict exactly which functions each account may use. New accounts must change their password at first sign-in.": "Créez les comptes du personnel, attribuez une ou plusieurs responsabilités et limitez précisément les fonctions accessibles à chaque compte. Les nouveaux comptes doivent changer leur mot de passe à la première connexion.", "Create tender notices (Avis d'Appel d'Offres / Avis à Manifestation d'Intérêt) directly from an approved plan line — the designation, method, estimate and unit are carried over so the notice always matches the plan.": "Créez les avis (Avis d’Appel d’Offres / Avis à Manifestation d’Intérêt) directement à partir d’une ligne du plan approuvée — la désignation, la méthode, l’estimation et l’unité sont reprises afin que l’avis corresponde toujours au plan.", "Custom start month": "Mois de début personnalisé", "Date received": "Date de réception", "December": "Décembre", "Designation": "Désignation", "Edit planning sheets": "Modifier les feuilles de planification", "Eligibility and required documents": "Conditions de participation et pièces exigées", "Estimated amount (FCFA)": "Montant estimé (FCFA)", "Estimated unit price": "Prix unitaire estimé", "Evaluate vendors": "Évaluer les fournisseurs", "Every requisition with its category, amount and current stage.": "Chaque réquisition avec sa catégorie, son montant et son étape en cours.", "Expired lots": "Lots périmés", "Expiring ≤ 90 days": "Périme sous 90 jours", "Expiry date": "Date de péremption", "FEFO monitoring (First Expired, First Out) — lots are listed by expiry date so the earliest-expiring stock is issued first. This is the control that prevents the kind of reagent write-off recorded in 2019–2020.": "Suivi FEFO (premier périmé, premier sorti) — les lots sont classés par date de péremption afin que le stock qui périme le plus tôt soit sorti en premier. C’est le contrôle qui prévient le type de perte de réactifs constatée en 2019–2020.", "February": "Février", "Final approval": "Approbation finale", "Finance": "Finance", "Financial reports": "États financiers", "Fiscal Year": "Exercice budgétaire", "Fiscal year basis": "Base de l’exercice budgétaire", "Fiscal year configuration": "Configuration de l’exercice budgétaire", "Full reporting suite": "Suite complète de rapports", "General ledger": "Grand livre", "Generate your first tender notice from a plan line.": "Générez votre premier avis à partir d’une ligne du plan.", "Human resources": "Ressources humaines", "IT & Equipment": "Informatique & Équipements", "In progress": "En cours", "Initial password (required at first sign-in)": "Mot de passe initial (à changer à la première connexion)", "January": "Janvier", "July": "Juillet", "June": "Juin", "Justification if the retained method differs from the recommendation": "Justification si la méthode retenue diffère de la recommandation", "Lab Reagents & Supplies": "Réactifs & consommables de laboratoire", "Location": "Emplacement", "Logistics & Transport": "Logistique & Transport", "Lot number": "Numéro de lot", "Lots by expiry with value and days remaining.": "Lots par péremption avec valeur et jours restants.", "Lots tracked": "Lots suivis", "Manage suppliers": "Gérer les fournisseurs", "March": "Mars", "May": "Mai", "Method retained": "Méthode retenue", "New advert / tender notice": "Nouvel avis d’appel d’offres", "New password": "Nouveau mot de passe", "No adverts yet": "Aucun avis pour l’instant", "No lots recorded yet": "Aucun lot enregistré pour l’instant", "No plan lines yet": "Aucune ligne de plan pour l’instant", "No reagents planned yet": "Aucun réactif planifié pour l’instant", "No restriction": "Aucune restriction", "Notice title": "Intitulé de l’avis", "November": "Novembre", "Object and scope of the notice": "Objet et étendue de l’avis", "October": "Octobre", "On hold": "En pause", "Other": "Autre", "Plan reference": "Référence au plan", "Planned": "Planifié", "Planned launch date": "Date de lancement prévue", "Planning": "Planification", "Procurement Specialist": "Spécialiste en Passation des Marchés", "Procurement processing": "Traitement de la passation", "Procurement records are numbered and reported by fiscal year. INSAPT follows the calendar year; other organizations can set a different start month. Current fiscal year:": "Les enregistrements de passation sont numérotés et rapportés par exercice budgétaire. L’INSAPT suit l’année civile ; les autres organisations peuvent définir un autre mois de début. Exercice en cours :", "Publication date": "Date de publication", "Purchase cycle (months)": "Durée du cycle d’achat (mois)", "Quantity = (Average monthly consumption × Seasonal factor × Cycle months) + Safety stock − Stock on hand": "Quantité = (Consommation mensuelle moyenne × Facteur saisonnier × Durée du cycle en mois) + Stock de sécurité − Stock disponible", "Quantity in stock": "Quantité en stock", "Reagent / Analyte": "Réactif / Analyte", "Reagent Forecasting": "Prévision des réactifs", "Reagent Stock Lots (FEFO)": "Lots de réactifs en stock (FEFO)", "Reagent Stock Lots": "Lots de réactifs en stock", "Reagent category": "Catégorie de réactif", "Reagent forecast": "Prévision des réactifs", "Reagents & lab supplies only": "Réactifs & consommables de laboratoire uniquement", "Reagents & lab supplies": "Réactifs & consommables de laboratoire", "Reagents tracked": "Réactifs suivis", "Receiving": "Réception", "Record received reagent lots with their expiry dates to activate FEFO monitoring.": "Enregistrez les lots de réactifs reçus avec leurs dates de péremption pour activer le suivi FEFO.", "Remaining shelf life at receipt (months)": "Durée de vie restante à réception (mois)", "Request status report": "Rapport d’état des demandes", "Requesting unit": "Unité demandeuse", "Responsibilities (roles)": "Responsabilités (rôles)", "Responsibilities": "Responsabilités", "Responsible": "Responsable", "Restrict to specific functions": "Limiter à des fonctions précises", "Restricted to": "Limité à", "Safety stock (months)": "Stock de sécurité (mois)", "Save advert": "Enregistrer l’avis", "Save fiscal year": "Enregistrer l’exercice", "Save lot": "Enregistrer le lot", "Save my password": "Enregistrer mon mot de passe", "Save plan line": "Enregistrer la ligne du plan", "Scope": "Périmètre", "Seasonal factor": "Facteur saisonnier", "September": "Septembre", "Set your password": "Définir votre mot de passe", "Source plan line": "Ligne du plan d’origine", "Staff Accounts": "Comptes du personnel", "Start month (custom only)": "Mois de début (personnalisé uniquement)", "Stock lots (FEFO)": "Lots en stock (FEFO)", "Stock on hand": "Stock disponible", "Stock operations": "Opérations de stock", "Storage temperature": "Température de stockage", "Subject-matter scope": "Périmètre thématique", "Submission deadline": "Date limite de dépôt", "Supporting documents (specifications, quotes, prior contracts…)": "Pièces justificatives (spécifications, devis, contrats antérieurs…)", "Tender notices issued, with deadlines and status.": "Avis publiés, avec échéances et statut.", "This is your first sign-in with the password issued by your administrator. Choose a new password before continuing.": "Ceci est votre première connexion avec le mot de passe délivré par votre administrateur. Choisissez un nouveau mot de passe avant de continuer.", "Total stock value": "Valeur totale du stock", "Use at least 8 characters. Your password is hashed (SHA-256) and can never be read back — only reset.": "Utilisez au moins 8 caractères. Votre mot de passe est haché (SHA-256) et ne peut jamais être relu — seulement réinitialisé.", "e.g. INSAPT/LNSP/PS/01": "ex. INSAPT/LNSP/PS/01", "e.g. a.mingar": "ex. a.mingar", "kit, flacon…": "kit, flacon…", "— Not linked to the plan —": "— Non rattaché au plan —", "↻ Refresh": "↻ Actualiser", "＋ Add lot": "＋ Ajouter un lot", "＋ Add plan line": "＋ Ajouter une ligne du plan", "＋ Add reagent": "＋ Ajouter un réactif", "＋ Create staff account": "＋ Créer un compte agent", "＋ New advert": "＋ Nouvel avis", "Recommended method for 0 FCFA:": "Méthode recommandée pour 0 FCFA :", "· anti-expiry cap": "· plafond anti-péremption", "· quantity to order": "· quantité à commander", "Anti-expiry cap": "Plafond anti-péremption", "Cap check": "Contrôle du plafond", "Within cap": "Dans le plafond", "Qty to order": "Qté à commander", "Monthly tests": "Tests mensuels", "Cover": "Couverture", "FEFO alert": "Alerte FEFO", "Expired — withdraw": "Périmé — à retirer", "days left": "jours restants", "Recommended": "Recommandée", "Retained": "Retenue", "Docs": "Pièces", "Divergence not justified": "Divergence non justifiée", "Recent sensitive actions with user and timestamp.": "Actions sensibles récentes avec utilisateur et horodatage."});
+
+
+/* =====================================================================
+   V1.5 — ROLE SWITCHER
+   Accounts holding several responsibilities choose which one they are
+   working as, right after sign-in and at any time from the top bar.
+   The interface then shows only that role's functions.
+   © ForTe Tools Is40v31 – Innocent Forteh
+===================================================================== */
+
+/* the role the user is currently working as ('' = all their roles at once) */
+function effectiveRoles(u){
+  u=u||Session.user; const all=rolesOf(u);
+  if(Session.activeRole && all.indexOf(Session.activeRole)>-1) return [Session.activeRole];
+  return all;
+}
+function activeRoleLabel(){
+  return Session.activeRole?roleLabel(Session.activeRole):'All my roles';
+}
+function can(perm){
+  const me=Session.user; if(!me)return false;
+  const rs=effectiveRoles(me);
+  const su=rs.indexOf('superadmin')>-1;
+  if(su&&perm==='platform')return true;
+  if(su&&rs.length===1)return false;               // working purely as super admin
+  if(Array.isArray(me.functions)&&me.functions.length&&me.functions.indexOf(perm)===-1
+     && ['dash','myrecords','proc.req','proc.view'].indexOf(perm)===-1) return false;
+  if(perm==='proc.req'||perm==='proc.view'||perm==='myrecords'||perm==='dash')return true;
+  for(let i=0;i<rs.length;i++){
+    const p=ROLE_PERMS[rs[i]]||[];
+    if(p[0]==='*')return perm!=='platform';
+    if(p.indexOf(perm)>-1)return true;
+  }
+  return false;
+}
+function isAdminUser(u){ return effectiveRoles(u).some(r=>ADMIN_ROLES.indexOf(r)>-1); }
+function defaultView(){
+  const rs=effectiveRoles(Session.user);
+  if(rs.length===1&&rs[0]==='superadmin')return 'sa.orgs';
+  return 'dash';
+}
+
+/* --- post-login role chooser (only when the account holds several roles) --- */
+function roleChooser(){
+  const rs=rolesOf(Session.user);
+  if(rs.length<2)return;
+  window._chooseServiceNext=true;
+  Modal.open('Choose your role for this session',`
+    <div class="notice i">Your account holds several responsibilities. Pick the one you are working as — the menu will show only that role's functions. You can switch at any time from the top bar.</div>
+    <div style="display:flex;flex-direction:column;gap:8px">
+      ${rs.map(r=>`<button class="btn sec" style="justify-content:flex-start;text-align:left" onclick="pickRole('${r}')">${esc(roleLabel(r))}</button>`).join('')}
+      <button class="btn ghost" style="justify-content:flex-start;text-align:left" onclick="pickRole('')">All my roles at once</button>
+    </div>`,'',false);
+}
+function pickRole(r){
+  Session.activeRole=r||'';
+  if(Session.user){ Session.user.lastRole=Session.activeRole; save(); }
+  audit('ROLE_SWITCH',Session.activeRole||'all roles');
+  Modal.close();
+  const chip=$('uRole'); if(chip)chip.textContent=activeRoleLabel();
+  const org=byId('orgs',Session.user.orgId);
+  const ob=$('orgBadge'); if(ob)ob.textContent=(effectiveRoles(Session.user).length===1&&Session.activeRole==='superadmin')?'ForTé Platform — Super Admin':(org?org.name:'');
+  buildRoleSwitcher(); buildNav(); nav(defaultView());
+  if(window.retranslateAll)retranslateAll();
+  toast('Now working as: '+activeRoleLabel(),'ok');
+  if(window._chooseServiceNext){ window._chooseServiceNext=false; setTimeout(serviceChooser,180); }
+}
+/* --- top-bar switcher --- */
+function buildRoleSwitcher(){
+  const host=$('roleSwitchWrap'); if(!host)return;
+  const rs=rolesOf(Session.user);
+  if(rs.length<2){ host.innerHTML=''; host.style.display='none'; return; }
+  host.style.display='';
+  host.innerHTML=`<select id="roleSwitch" class="roleSel" title="Switch role" onchange="pickRole(this.value)">
+    ${rs.map(r=>`<option value="${r}" ${Session.activeRole===r?'selected':''}>${esc(roleLabel(r))}</option>`).join('')}
+    <option value="" ${!Session.activeRole?'selected':''}>All my roles at once</option>
+  </select>`;
+}
+Object.assign(L,{
+ 'Choose your role for this session':'Choisissez votre rôle pour cette session',
+ "Your account holds several responsibilities. Pick the one you are working as — the menu will show only that role's functions. You can switch at any time from the top bar.":'Votre compte détient plusieurs responsabilités. Choisissez celle avec laquelle vous travaillez — le menu n’affichera que les fonctions de ce rôle. Vous pouvez en changer à tout moment depuis la barre supérieure.',
+ 'All my roles at once':'Tous mes rôles à la fois','All my roles':'Tous mes rôles','Switch role':'Changer de rôle'
+});
+
+
+/* =====================================================================
+   V1.6 — SERVICE DESK (choose an ERP function)
+   Any signed-in user picks the ERP area they want to use — HR, Finance,
+   IT, Stock, Maintenance, Procurement — and gets that area's self-service
+   actions (record leave, request training, raise a request…) without
+   needing the module's officer role.
+   © ForTe Tools Is40v31 – Innocent Forteh
+===================================================================== */
+
+const SERVICE_AREAS=[
+  ['proc','Procurement','🛒'],
+  ['hr','Human Resources','🧑‍💼'],
+  ['fin','Finance','💰'],
+  ['it','IT & Equipment','💻'],
+  ['stock','Stock & Supplies','📦'],
+  ['maint','Maintenance','🔧'],
+  ['train','Training','🎓']
+];
+const SERVICE_CATEGORY={proc:'Procurement',hr:'Human Resources',fin:'Finance',it:'IT & Equipment',stock:'Logistics & Transport',maint:'Maintenance',train:'Training'};
+function serviceLabel(id){ const a=SERVICE_AREAS.find(x=>x[0]===id); return a?a[1]:''; }
+function servicesFor(u){
+  u=u||Session.user;
+  return (u&&u.scope==='REAGENTS')?SERVICE_AREAS.filter(a=>['stock','proc'].indexOf(a[0])>-1):SERVICE_AREAS;
+}
+function pickService(id){
+  Session.service=id||'';
+  if(Session.user){ Session.user.lastService=Session.service; save(); }
+  audit('SERVICE_SELECT',Session.service||'none');
+  buildServiceSwitcher(); buildNav();
+  if(Session.service)nav('svc.desk'); else nav(defaultView());
+  if(window.retranslateAll)retranslateAll();
+  if(Session.service)toast('Service desk: '+serviceLabel(Session.service),'ok');
+}
+function buildServiceSwitcher(){
+  const host=$('svcSwitchWrap'); if(!host)return;
+  const list=servicesFor();
+  host.innerHTML=`<select id="svcSwitch" class="roleSel" title="Choose an ERP service" onchange="pickService(this.value)">
+    <option value="" ${!Session.service?'selected':''}>— Choose a service —</option>
+    ${list.map(a=>`<option value="${a[0]}" ${Session.service===a[0]?'selected':''}>${a[2]} ${esc(a[1])}</option>`).join('')}
+  </select>`;
+}
+/* post-login prompt (after role choice / password change) */
+function serviceChooser(){
+  const list=servicesFor();
+  Modal.open('What do you want to do today?',`
+    <div class="notice i">Choose the ERP service you need. You can raise a request in any of these areas — recording leave, asking for IT equipment, requesting supplies — whatever your role. Switch at any time from the top bar.</div>
+    <div style="display:flex;flex-direction:column;gap:8px">
+      ${list.map(a=>`<button class="btn sec" style="justify-content:flex-start;text-align:left" onclick="Modal.close();pickService('${a[0]}')">${a[2]} &nbsp;${esc(a[1])}</button>`).join('')}
+      <button class="btn ghost" style="justify-content:flex-start;text-align:left" onclick="Modal.close();pickService('')">Just take me to my dashboard</button>
+    </div>`,'',false);
+}
+
+function afterLoginChoosers(){
+  const rs=rolesOf(Session.user);
+  if(rs.length>1&&!Session.activeRole){ roleChooser(); return; }   // role first, service after
+  serviceChooser();
+}
+/* ---------- the service desk view ---------- */
+Views['svc.desk']={title:'Service Desk',crumb:'My Services',help:HELPref('svcDesk'),render(el){
+  const s=Session.service; if(!s){ el.innerHTML='<div class="empty"><b>No service selected</b>Pick a service from the dropdown in the top bar.</div>'; return; }
+  const me=Session.user;
+  const actions={
+    hr:[['🌴','Record a leave request','svcLeaveForm()','Submit annual, sick or special leave for approval.'],
+        ['🎓','Request a training','svcTrainForm()','Ask to attend a course or workshop.'],
+        ['📝','Other HR request','svcNewReq("hr")','Any other HR need — raised as a formal request.']],
+    fin:[['💵','Request an advance or reimbursement','svcNewReq("fin")','Mission advance, expense reimbursement, per diem.'],
+         ['📝','Other finance request','svcNewReq("fin")','Any other finance need.']],
+    it:[['💻','Request IT equipment or support','svcNewReq("it")','Computer, printer, network access, repairs.']],
+    stock:[['📦','Request supplies from the store','svcNewReq("stock")','Consumables and items held in the warehouse.']],
+    maint:[['🔧','Report a maintenance need','svcNewReq("maint")','Equipment repair, building or vehicle maintenance.']],
+    train:[['🎓','Request a training','svcTrainForm()','Ask to attend a course or workshop.']],
+    proc:[['🛒','Raise a purchase requisition','svcNewReq("proc")','Goods, services or works to be procured.']]
+  }[s]||[];
+  // my own records in this area
+  let mine='';
+  if(s==='hr'||s==='train'){
+    const lv=C('leave').filter(x=>x.requesterId===me.id);
+    const tr=C('training').filter(x=>x.requesterId===me.id);
+    if(s==='hr')mine+=`<div class="card"><h3>My leave requests</h3>${tbl(['Ref','Type','From','To','Days','Status'],lv.map(x=>[esc(x.code),esc(x.type),x.from?fmtD(x.from):'—',x.to?fmtD(x.to):'—',esc(String(x.days||'')),statusBadge(x.status)]),{emptyTitle:'No leave requests yet',emptyMsg:'Your submitted leave will appear here with its approval status.'})}</div>`;
+    mine+=`<div class="card"><h3>My training requests</h3>${tbl(['Ref','Training','Date','Status'],tr.map(x=>[esc(x.code),esc(x.name),x.date?fmtD(x.date):'—',statusBadge(x.status)]),{emptyTitle:'No training requests yet'})}</div>`;
+  } else {
+    const cat=SERVICE_CATEGORY[s];
+    const rq=C('reqs').filter(r=>r.requesterId===me.id&&(!cat||r.category===cat));
+    mine=`<div class="card"><h3>My requests in this service</h3>${tbl(['N°','Title','Amount','Status','Created'],rq.map(r=>[`<a href="javascript:reqDetail('${r.id}')">${esc(r.no)}</a>`,esc(r.title),fmtN(grandTotalOf(r)),statusBadge(r.status),fmtD(r.createdAt)]),{emptyTitle:'No requests yet in this service'})}</div>`;
+  }
+  el.innerHTML=`<div class="notice i">You are in the <b>${esc(serviceLabel(s))}</b> service. These are the things anyone can request here — you do not need to hold the ${esc(serviceLabel(s))} officer role. Requests follow the normal approval route.</div>
+    <div class="grid2">${actions.map(a=>`<div class="card"><h3>${a[0]} ${esc(a[1])}</h3><div style="font-size:12px;color:var(--mut);margin-bottom:10px">${esc(a[3])}</div><div class="btnRow"><button class="btn" onclick="${a[2]}">Start</button></div></div>`).join('')}</div>
+    ${mine}`;
+}};
+/* raise a normal requisition pre-set to this service's category */
+function svcNewReq(area){
+  reqForm();
+  setTimeout(function(){ const e=$('f_category'); if(e){ const cat=SERVICE_CATEGORY[area]; if(cat&&[...e.options].some(o=>o.value===cat))e.value=cat; } },30);
+}
+/* leave request (self-service) */
+function svcLeaveForm(){
+  Modal.open('Record a leave request',`
+    <div class="notice i">Your request goes to HR / your approver. You can follow its status on this page.</div>
+    <div class="grid2">
+      ${field({k:'type',label:'Leave type',type:'select',opts:['Annual','Sick','Maternity/Paternity','Special','Unpaid']})}
+      ${field({k:'days',label:'Working days',type:'number'})}
+    </div>
+    <div class="grid2">${field({k:'from',label:'From',type:'date',req:true})}${field({k:'to',label:'To',type:'date',req:true})}</div>
+    ${field({k:'reason',label:'Reason / handover notes',type:'textarea'})}
+  `,`<button class="btn ghost" onclick="Modal.close()">Cancel</button><button class="btn" onclick="svcLeaveSave()">Submit request</button>`);
+}
+function svcLeaveSave(){
+  const f=readForm([{k:'type'},{k:'days',type:'number'},{k:'from',req:true},{k:'to',req:true},{k:'reason'}]); if(!f)return;
+  const rec={id:uid('lv'),orgId:Session.user.orgId,code:seqNoFY('LVE',C('leave'),'code'),employee:Session.user.name,
+    requesterId:Session.user.id,type:f.type,from:f.from,to:f.to,days:f.days,reason:f.reason,status:'PENDING',createdAt:nowIso()};
+  col('leave').unshift(rec);
+  notifyRoles(['hr','approver'],'Leave request '+rec.code+' from '+Session.user.name+' awaits approval','hr.leave',rec.id);
+  audit('LEAVE_REQUEST',rec.code); save(); Modal.close(); nav('svc.desk'); toast('Leave request '+rec.code+' submitted.','ok');
+}
+/* training request (self-service) */
+function svcTrainForm(){
+  Modal.open('Request a training',`
+    <div class="grid2">${field({k:'name',label:'Training title',req:true})}${field({k:'date',label:'Preferred date',type:'date'})}</div>
+    <div class="grid2">${field({k:'provider',label:'Provider / institution'})}${field({k:'cost',label:'Estimated cost',type:'number'})}</div>
+    ${field({k:'notes',label:'How this supports your work',type:'textarea'})}
+  `,`<button class="btn ghost" onclick="Modal.close()">Cancel</button><button class="btn" onclick="svcTrainSave()">Submit request</button>`);
+}
+function svcTrainSave(){
+  const f=readForm([{k:'name',req:true},{k:'date'},{k:'provider'},{k:'cost',type:'number'},{k:'notes'}]); if(!f)return;
+  const rec={id:uid('trn'),orgId:Session.user.orgId,code:seqNoFY('TRN',C('training'),'code'),name:f.name,date:f.date,
+    provider:f.provider,cost:f.cost,notes:f.notes,audience:Session.user.name,requesterId:Session.user.id,status:'PLANNED',createdAt:nowIso()};
+  col('training').unshift(rec);
+  notifyRoles(['hr'],'Training request '+rec.code+' from '+Session.user.name,'hr.train',rec.id);
+  audit('TRAINING_REQUEST',rec.code); save(); Modal.close(); nav('svc.desk'); toast('Training request '+rec.code+' submitted.','ok');
+}
+Object.assign(HELP,{svcDesk:`<h4>Service desk</h4><p>Pick an ERP service from the top bar to see what anyone may request in that area — recording leave under HR, asking for IT equipment, requesting supplies from the store. You do not need that module's officer role: these are self-service actions, and each one follows the normal approval route. Your own submissions and their status are listed underneath.</p>`});
+Object.assign(L,{
+ 'Service Desk':'Guichet de services','My Services':'Mes services','Choose an ERP service':'Choisir un service ERP',
+ '— Choose a service —':'— Choisir un service —','What do you want to do today?':'Que souhaitez-vous faire aujourd’hui ?',
+ 'Choose the ERP service you need. You can raise a request in any of these areas — recording leave, asking for IT equipment, requesting supplies — whatever your role. Switch at any time from the top bar.':'Choisissez le service ERP dont vous avez besoin. Vous pouvez faire une demande dans chacun de ces domaines — enregistrer un congé, demander du matériel informatique, demander des fournitures — quel que soit votre rôle. Vous pouvez en changer à tout moment depuis la barre supérieure.',
+ 'Just take me to my dashboard':'Aller simplement à mon tableau de bord','No service selected':'Aucun service sélectionné',
+ 'Pick a service from the dropdown in the top bar.':'Choisissez un service dans la liste déroulante de la barre supérieure.',
+ 'Record a leave request':'Enregistrer une demande de congé','Request a training':'Demander une formation',
+ 'Other HR request':'Autre demande RH','Request an advance or reimbursement':'Demander une avance ou un remboursement',
+ 'Other finance request':'Autre demande financière','Request IT equipment or support':'Demander du matériel ou une assistance informatique',
+ 'Request supplies from the store':'Demander des fournitures au magasin','Report a maintenance need':'Signaler un besoin de maintenance',
+ 'Raise a purchase requisition':'Créer une réquisition d’achat','Start':'Commencer','Submit request':'Soumettre la demande',
+ 'My leave requests':'Mes demandes de congé','My training requests':'Mes demandes de formation','My requests in this service':'Mes demandes dans ce service',
+ 'No leave requests yet':'Aucune demande de congé pour l’instant','No training requests yet':'Aucune demande de formation pour l’instant',
+ 'No requests yet in this service':'Aucune demande dans ce service pour l’instant',
+ 'Your submitted leave will appear here with its approval status.':'Vos congés soumis apparaîtront ici avec leur statut d’approbation.',
+ 'Your request goes to HR / your approver. You can follow its status on this page.':'Votre demande est transmise aux RH / à votre approbateur. Vous pouvez suivre son statut sur cette page.',
+ 'Submit annual, sick or special leave for approval.':'Soumettez un congé annuel, maladie ou spécial pour approbation.',
+ 'Ask to attend a course or workshop.':'Demandez à participer à un cours ou un atelier.',
+ 'Any other HR need — raised as a formal request.':'Tout autre besoin RH — soumis comme demande formelle.',
+ 'Mission advance, expense reimbursement, per diem.':'Avance de mission, remboursement de frais, per diem.',
+ 'Any other finance need.':'Tout autre besoin financier.',
+ 'Computer, printer, network access, repairs.':'Ordinateur, imprimante, accès réseau, réparations.',
+ 'Consumables and items held in the warehouse.':'Consommables et articles détenus au magasin.',
+ 'Equipment repair, building or vehicle maintenance.':'Réparation d’équipement, maintenance des bâtiments ou véhicules.',
+ 'Goods, services or works to be procured.':'Biens, services ou travaux à acquérir.',
+ 'Leave type':'Type de congé','Working days':'Jours ouvrables','From':'Du','To':'Au',
+ 'Reason / handover notes':'Motif / notes de passation','Training title':'Intitulé de la formation','Preferred date':'Date souhaitée',
+ 'Provider / institution':'Prestataire / institution','Estimated cost':'Coût estimé','How this supports your work':'En quoi cela soutient votre travail',
+ 'Human Resources':'Ressources Humaines','IT & Equipment':'Informatique & Équipements','Stock & Supplies':'Stocks & Fournitures',
+ 'Procurement':'Passation des Marchés','Maintenance':'Maintenance','Training':'Formation','Finance':'Finance'
+});
 
 /* =====================================================================
    INIT
