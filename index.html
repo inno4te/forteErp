@@ -254,7 +254,7 @@ table.tbl .num{text-align:right;font-variant-numeric:tabular-nums}
     <span id="svcSwitchWrap"></span>
     <span id="roleSwitchWrap" style="display:none"></span>
     <button class="tbtn" id="langBtn" onclick="toggleLang()" title="Switch language / Changer de langue">FR</button>
-    <div id="userChip"><div class="av" id="uAv"></div><div><div class="un" id="uName"></div><div class="ur" id="uRole"></div></div></div>
+    <div id="userChip" onclick="myOfficeModal()" style="cursor:pointer" title="Change my office / section"><div class="av" id="uAv"></div><div><div class="un" id="uName"></div><div class="ur" id="uRole"></div></div></div>
     <button class="tbtn" id="btnSignout" onclick="logout()">Sign out</button>
   </div>
   <div id="body">
@@ -494,7 +494,7 @@ function buildNav(){
 function navBadge(vid){
   try{
     const rs=C('reqs');
-    if(vid==='pr.approve')return rs.filter(r=>r.status==='PENDING_APPROVAL'&&r.approverId===Session.user.id).length||'';
+    if(vid==='pr.approve')return rs.filter(r=>r.status==='PENDING_APPROVAL'&&(r.approverId===Session.user.id||canSeeAllApprovals(Session.user))).length||'';
     if(vid==='pr.process')return rs.filter(r=>['PENDING_PROCUREMENT','FUNDED'].includes(r.status)).length||'';
     if(vid==='pr.fund')return rs.filter(r=>r.status==='PENDING_FUNDING').length||'';
     if(vid==='pr.final')return rs.filter(r=>r.status==='PENDING_FINAL').length||'';
@@ -1106,9 +1106,11 @@ window.reqFormEdit=id=>reqForm(byId('reqs',id));
 function filterRqRows(q){ q=(q||'').toLowerCase(); document.querySelectorAll('#rqTblCard tbody tr').forEach(tr=>{ tr.style.display=tr.textContent.toLowerCase().includes(q)?'':'none'; }); }
 Views['pr.list'].help=HELPref('reqList');
 
+function canSeeAllApprovals(u){ return (window.isAdminUser&&isAdminUser(u))||(window.hasRole&&hasRole(u,'dg')); }
 Views['pr.approve']={title:'My Approvals — Section Head',crumb:'Procurement',render(el){
-  const q=C('reqs').filter(r=>r.status==='PENDING_APPROVAL'&&r.approverId===Session.user.id);
-  el.innerHTML=`<div class="notice i">Requisitions from your section awaiting your decision. Approving forwards them to the Procurement team; rejecting returns them to the requester with your comment.</div><div class="card">${tbl(REQ_HEAD,q.map(r=>reqRow(r,viewBtn(r.id)+` <button class="btn sm" onclick="approveModal('${r.id}')">Review →</button>`)),{emptyTitle:'Queue clear',emptyMsg:'No requisitions currently await your approval.'})}</div>`;
+  const me=Session.user; const seeAll=canSeeAllApprovals(me);
+  const q=C('reqs').filter(r=>r.status==='PENDING_APPROVAL'&&(r.approverId===me.id||seeAll));
+  el.innerHTML=`<div class="notice i">${seeAll?'You see every requisition awaiting approval across the organization, not only those routed to you, because you hold an oversight role.':'Requisitions from your section awaiting your decision.'} Approving forwards them to the Procurement team; rejecting returns them to the requester with your comment.</div><div class="card">${tbl(seeAll?['Assigned to'].concat(REQ_HEAD):REQ_HEAD,q.map(r=>{const row=reqRow(r,viewBtn(r.id)+` <button class="btn sm" onclick="approveModal('${r.id}')">Review →</button>`);return seeAll?[esc((byId('users',r.approverId)||{}).name||'—')].concat(row):row;}),{emptyTitle:'Queue clear',emptyMsg:'No requisitions currently await your approval.'})}</div>`;
 }};
 Views['pr.process']={title:'Procurement Desk',crumb:'Procurement',render(el){
   const q=C('reqs').filter(r=>r.status==='PENDING_PROCUREMENT');
@@ -1209,7 +1211,8 @@ Views['dash']={title:'Dashboard',crumb:'Overview',help:HELPref('dash'),render(el
   rs.forEach(r=>{if(pend[r.status]!=null)pend[r.status]++;});
   const totalSpend=C('budgets').reduce((a,b)=>a+(b.spent||0),0);
   const committed=C('budgets').reduce((a,b)=>a+(b.committed||0),0);
-  const myQueue = me.role==='approver'?rs.filter(r=>r.status==='PENDING_APPROVAL'&&r.approverId===me.id)
+  const myQueue = (window.canSeeAllApprovals&&canSeeAllApprovals(me))?rs.filter(r=>r.status==='PENDING_APPROVAL')
+    : me.role==='approver'?rs.filter(r=>r.status==='PENDING_APPROVAL'&&r.approverId===me.id)
     : me.role==='procurement'?rs.filter(r=>['PENDING_PROCUREMENT','FINAL_APPROVED'].includes(r.status))
     : me.role==='finance'?rs.filter(r=>r.status==='PENDING_FUNDING')
     : me.role==='dg'?rs.filter(r=>r.status==='PENDING_FINAL')
@@ -2957,6 +2960,91 @@ Object.assign(L,{
  'Human Resources':'Ressources Humaines','IT & Equipment':'Informatique & Équipements','Stock & Supplies':'Stocks & Fournitures',
  'Procurement':'Passation des Marchés','Maintenance':'Maintenance','Training':'Formation','Finance':'Finance'
 });
+
+
+/* =====================================================================
+   V1.7 — APPROVAL VISIBILITY FIX, SELF-SERVICE OFFICE CHANGE,
+   AND HONEST SYNC STATUS
+   © ForTe Tools Is40v31 – Innocent Forteh
+===================================================================== */
+
+/* ---------- self-service: change my office (section) ---------- */
+function myOfficeModal(){
+  const me=Session.user; const secs=(Org().sections||[]).map(s=>s.name);
+  Modal.open('My office / section',`
+    <div class="notice i">Your office determines who approves the requests you raise. Changing it here updates your default from now on — it does not change the routing of requests you have already submitted.</div>
+    <div class="field"><label>My office / section</label>
+      <input id="f_myoffice" list="myOfficeDL" value="${esc(me.section||'')}" placeholder="Select or type a new office">
+      <datalist id="myOfficeDL">${secs.map(x=>`<option value="${esc(x)}">`).join('')}</datalist>
+    </div>
+    <div style="font-size:11.5px;color:var(--grey);margin-top:6px">Current approver for this office: <b>${esc((byId('users',(Org().sections||[]).find(s=>s.name===me.section)?.approverId)||{}).name||'—')}</b></div>
+  `,`<button class="btn ghost" onclick="Modal.close()">Cancel</button><button class="btn" onclick="saveMyOffice()">Save</button>`);
+}
+function saveMyOffice(){
+  const v=(($('f_myoffice')||{}).value||'').trim();
+  if(!v){toast('Enter an office / section.','bad');return;}
+  const secs=Org().sections=Org().sections||[];
+  if(!secs.some(x=>x.name.toLowerCase()===v.toLowerCase())){ secs.push({id:uid('sec'),name:v,approverId:''}); audit('SECTION_ADD',v); }
+  Session.user.section=v; audit('OFFICE_CHANGE',v); save();
+  Modal.close(); toast('Your office is now "'+v+'". New requests you raise will route accordingly.','ok');
+}
+
+/* ---------- honest sync status: surface real backend failures ---------- */
+/* no-cors POST hides HTTP/server errors from fetch(), so we verify every
+   push by immediately reading the record back and comparing timestamps. */
+async function verifiedPush(){
+  if(!CONFIG.gasUrl)return;
+  const stamp=DB.meta.updatedAt;
+  try{
+    await fetch(CONFIG.gasUrl,{method:'POST',mode:'no-cors',headers:{'Content-Type':'text/plain'},body:JSON.stringify({action:'save',key:CONFIG.storageKey,updatedAt:stamp,data:DB})});
+  }catch(e){ Sync.setDot('err','offline'); return false; }
+  // confirm the server actually stored it (a size/quota failure on the
+  // Apps Script side is invisible to a no-cors fetch, so we check by reading back)
+  const confirmed=await new Promise(res=>{
+    const cb='gasVerify_'+Date.now();
+    const to=setTimeout(()=>{cleanup();res(false);},9000);
+    function cleanup(){delete window[cb];sc.remove();clearTimeout(to);}
+    window[cb]=(resp)=>{cleanup(); res(!!(resp&&resp.ok&&resp.data&&resp.data.meta&&resp.data.meta.updatedAt===stamp));};
+    const sc=document.createElement('script');
+    sc.src=CONFIG.gasUrl+'?action=load&key='+encodeURIComponent(CONFIG.storageKey)+'&callback='+cb+'&_='+Date.now();
+    sc.onerror=()=>{cleanup();res(false);};
+    document.body.appendChild(sc);
+  });
+  if(confirmed){ Sync.setDot('on','cloud ✓'); }
+  else {
+    Sync.setDot('err','save FAILED');
+    const bytes=new Blob([JSON.stringify(DB)]).size;
+    notify(Session.user.id,'Cloud save could not be confirmed (data may be too large — currently '+Math.round(bytes/1024)+' KB). An admin should check Super Admin → Data & Cloud Sync.','sa.data',null);
+    toast('Cloud save could not be confirmed — your last change may not be visible to others yet. See the bell icon.','bad');
+  }
+  return confirmed;
+}
+/* wrap the existing pushNow so manual + debounced saves are both verified */
+const _origPushNow=Sync.pushNow.bind(Sync);
+Sync.pushNow=function(manual){
+  if(!CONFIG.gasUrl){ if(manual)toast('Cloud sync not configured. Set CONFIG.gasUrl (see Deployment Guide).','warn'); return; }
+  this.setDot('','syncing…');
+  verifiedPush().then(ok=>{ if(manual&&ok)toast('Data pushed to cloud and confirmed.','ok'); });
+};
+
+/* ---------- Data & Cloud Sync page: show real payload size vs the limit ---------- */
+Object.assign(L,{
+ 'My office / section':'Mon bureau / section',
+ 'Your office determines who approves the requests you raise. Changing it here updates your default from now on — it does not change the routing of requests you have already submitted.':'Votre bureau détermine qui approuve vos demandes. Ce changement met à jour votre choix par défaut à partir de maintenant — il ne modifie pas l’acheminement des demandes déjà soumises.',
+ 'My office / section':'Mon bureau / section','Select or type a new office':'Choisir ou saisir un nouveau bureau',
+ 'Current approver for this office:':'Approbateur actuel pour ce bureau :',
+ 'Enter an office / section.':'Indiquez un bureau / une section.',
+ 'You see every requisition awaiting approval across the organization, not only those routed to you, because you hold an oversight role. Approving forwards them to the Procurement team; rejecting returns them to the requester with your comment.':'Vous voyez toutes les réquisitions en attente d’approbation dans l’organisation, pas seulement celles qui vous sont adressées, car vous détenez un rôle de supervision. L’approbation les transmet à la Passation ; le rejet les retourne au demandeur avec votre commentaire.',
+ 'Requisitions from your section awaiting your decision.':'Réquisitions de votre section en attente de votre décision.',
+ 'Approving forwards them to the Procurement team; rejecting returns them to the requester with your comment.':'L’approbation les transmet à la Passation ; le rejet les retourne au demandeur avec votre commentaire.',
+ 'Assigned to':'Assigné à',
+ 'Cloud save could not be confirmed (data may be too large — currently':'La sauvegarde cloud n’a pas pu être confirmée (les données sont peut-être trop volumineuses — actuellement',
+ 'KB). An admin should check Super Admin → Data & Cloud Sync.':'Ko). Un administrateur devrait vérifier Super Admin → Données & Sync cloud.',
+ 'Cloud save could not be confirmed — your last change may not be visible to others yet. See the bell icon.':'La sauvegarde cloud n’a pas pu être confirmée — votre dernier changement n’est peut-être pas encore visible pour les autres. Voir la cloche de notifications.',
+ 'Data pushed to cloud and confirmed.':'Données envoyées et confirmées dans le cloud.',
+ 'save FAILED':'échec de la sauvegarde','syncing…':'synchronisation…','offline':'hors ligne'
+});
+Object.assign(HELP,{ syncSizeNote:'Each save is now verified by reading it back from the cloud; if the server could not store it (most commonly because attachments have made the data very large), you will see "save FAILED" on the sync dot and a notification bell rather than a false "cloud ✓".' });
 
 /* =====================================================================
    INIT
